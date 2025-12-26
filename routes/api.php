@@ -5,7 +5,80 @@ use App\Http\Controllers\Api\Auth\AuthController;
 use App\Http\Controllers\Api\Admin\AdminController;
 use App\Http\Controllers\Api\Promoteur\PromoteurController;
 use App\Http\Controllers\Api\Candidat\CandidatController;
+use App\Http\Controllers\Api\DashboardCandidatController;
+use App\Http\Controllers\Api\CandidatureController;
 use App\Http\Controllers\Api\Candidat\ChatController;
+use App\Http\Controllers\VoteController;
+use App\Http\Controllers\Api\PaymentController;
+
+// routes/web.php
+Route::get('/payment/success/{token}', [PaymentController::class, 'redirectSuccess'])
+    ->name('payment.redirect.success');
+
+Route::get('/payment/failed/{token}', [PaymentController::class, 'redirectFailed'])
+    ->name('payment.redirect.failed');
+
+Route::get('/payment/cancel/{token}', [PaymentController::class, 'redirectCancel'])
+    ->name('payment.redirect.cancel');
+
+// Routes publiques
+Route::middleware(['api', 'throttle:60,1'])->group(function () {
+    // Routes publiques existantes...
+    
+    // Webhook FedaPay - accepter GET et POST
+    Route::match(['GET', 'POST'], '/payments/webhook', [PaymentController::class, 'webhook'])->name('payment.webhook');
+    
+    // Route pour l'annulation explicite
+    Route::match(['GET', 'POST'], '/payments/cancel', [PaymentController::class, 'handleCancellation'])->name('payment.cancel.webhook');
+    
+    // Route pour vérifier et rediriger après paiement
+    Route::get('/payments/redirect', [PaymentController::class, 'handlePaymentRedirect'])->name('payment.redirect');
+});
+
+Route::get('/payments/redirect-handler', function() {
+    return view('payments.redirect_handler');
+});
+
+Route::middleware(['api', 'throttle:60,1'])->group(function () {
+
+    Route::get('/payments/callback', [PaymentController::class, 'fedapayCallback'])->name('payment.callback');
+    // Routes publiques
+    Route::get('/editions/{edition}/candidats', [VoteController::class, 'getCandidats']);
+    Route::get('/editions/{edition}/statistics', [VoteController::class, 'getEditionStatistics']);
+    Route::get('/categories', [VoteController::class, 'getCategories']);
+    Route::get('/payments/{token}/verify', [PaymentController::class, 'verifyPayment'])->name('payment.verify');
+    
+    // Webhook FedaPay (sans authentification)
+    Route::post('/payments/webhook', [PaymentController::class, 'webhook'])->name('payment.webhook');
+});
+
+Route::middleware(['api', 'throttle:30,1'])->group(function () {
+    // Votes
+    Route::post('/votes', [VoteController::class, 'vote'])->name('vote.create');
+    Route::get('/votes/history', [VoteController::class, 'voteHistory']);
+    Route::get('/votes/statistics', [VoteController::class, 'getUserStatistics']);
+    
+    // Paiements
+    Route::post('/payments/initiate', [PaymentController::class, 'initiatePayment'])->name('payment.initiate');
+    Route::post('/payments/process', [PaymentController::class, 'processPayment'])->name('payment.process');
+    Route::get('/payments/{token}/verify', [PaymentController::class, 'verifyPayment'])->name('payment.verify');
+    Route::get('/payments/{token}/status', [PaymentController::class, 'checkPaymentStatus'])->name('payment.status');
+    Route::get('/payments/{token}/success', [PaymentController::class, 'paymentSuccess'])->name('payment.success');
+    Route::get('/payments/{token}/failed', [PaymentController::class, 'paymentFailed'])->name('payment.failed');
+    Route::post('/payments/{token}/cancel', [PaymentController::class, 'cancelPayment'])->name('payment.cancel');
+    Route::get('/payments/history', [PaymentController::class, 'paymentHistory']);
+    
+    // Webhook
+    Route::post('/payments/webhook', [PaymentController::class, 'webhook'])->name('payment.webhook')->withoutMiddleware(['api', 'throttle']);
+});
+
+// Routes publiques pour les redirections
+Route::middleware('web')->group(function () {
+    Route::get('/payments/{token}/success/redirect', [PaymentController::class, 'redirectSuccess'])->name('payment.success.redirect');
+    Route::get('/payments/{token}/failed/redirect', [PaymentController::class, 'redirectFailed'])->name('payment.failed.redirect');
+    Route::get('/payments/callback', [PaymentController::class, 'fedapayCallback'])->name('payment.callback');
+    Route::get('/payments/{token}/cancel', [PaymentController::class, 'cancelPayment'])->name('payment.cancel.get');
+});
 
 Route::middleware(['auth:sanctum'])->get('/user', function (Request $request) {
     return $request->user();
@@ -105,15 +178,17 @@ Route::prefix('promoteur')->middleware(['auth:sanctum'])->group(function () {
 Route::get('/candidats', [AdminController::class, 'getCandidatsEditionActive']);
 
 Route::middleware(['auth:sanctum'])->group(function () {
+    // Votes
+    Route::post('/votes', [VoteController::class, 'vote']);
+    Route::get('/votes/statistics/{editionId}', [VoteController::class, 'getStatistics']);
     
-    // Route pour voter
-    Route::post('/votes', [AdminController::class, 'voter']);
-    
-    // Route pour vérifier si l'utilisateur a déjà voté
-    Route::get('/votes/check/{candidatId}', [AdminController::class, 'checkVote']);
-    
-    // Route pour les statistiques de vote
-    Route::get('/editions/active/statistiques', [AdminController::class, 'getStatistiquesVote']);
+    // Paiements
+
+    Route::get('/payments/create', [PaymentController::class, 'create'])->name('payment.create');
+    Route::get('/payments/confirm/{token}', [PaymentController::class, 'confirm'])->name('payment.confirm');
+    Route::get('/payments/success/{token}', [PaymentController::class, 'success'])->name('payment.success');
+    Route::get('/payments/failed/{token}', [PaymentController::class, 'failed'])->name('payment.failed');
+    Route::get('/payments/check-status/{token}', [PaymentController::class, 'checkStatus'])->name('payment.checkStatus');
 });
 
 // Route publique pour voir les résultats (sans authentification)
@@ -204,4 +279,50 @@ Route::get('/test', function () {
         'message' => 'API is working'
     ]);
 });
-    
+
+
+// Dans routes/api.php (pour le développement seulement)
+if (app()->environment('local')) {
+    Route::get('/test-cancel/{transactionId}', function($transactionId) {
+        // Simuler une annulation FedaPay
+        return redirect()->to('/api/payments/callback?id=' . $transactionId . '&status=pending&close=true');
+    });
+}
+
+// Route pour les annulations
+Route::get('/payments/cancelled', function(Request $request) {
+    return view('payments.close_and_redirect', [
+        'message' => 'Paiement annulé',
+        'auto_close' => true,
+        'redirect_url' => url('/') // Rediriger vers l'accueil
+    ]);
+})->name('payment.cancelled.page');
+
+// Modifiez la route webhook pour accepter GET
+Route::match(['GET', 'POST'], '/payments/webhook', [PaymentController::class, 'webhook']);
+
+Route::middleware('auth:sanctum')->group(function () {
+    // Routes pour les candidatures
+    Route::prefix('candidat')->group(function () {
+        
+        // Nouvelles routes pour les statistiques
+        Route::get('/statistiques', [CandidatureController::class, 'getStatistiques']);
+        Route::get('/votes/{edition_id?}/{category_id?}', [VoteController::class, 'getVotesForCandidat']);
+        Route::get('/classement/{edition_id?}/{category_id?}', [VoteController::class, 'getClassement']);
+    });
+
+    // Routes pour les statistiques générales
+    Route::prefix('stats')->group(function () {
+        Route::get('/candidat', [StatsController::class, 'getCandidatStats']);
+        Route::get('/edition/{editionId}', [StatsController::class, 'getEditionStats']);
+        Route::get('/category/{categoryId}', [StatsController::class, 'getCategoryStats']);
+    });
+});
+
+Route::prefix('candidat/dashboard')->group(function () {
+    // Statistiques globales du dashboard
+    Route::get('/stats', [DashboardCandidatController::class, 'getDashboardStats']);
+        
+    // Statistiques détaillées par édition/catégorie
+    Route::get('/stats/detailed', [DashboardCandidatController::class, 'getDetailedStats']);
+});

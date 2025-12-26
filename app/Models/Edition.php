@@ -312,4 +312,70 @@ class Edition extends Model
                ($this->statut_votes === 'en_cours' || $this->statut_votes === 'suspendu') &&
                now()->greaterThanOrEqualTo($this->date_fin_votes);
     }
+
+    public function isVoteOpen(): bool
+    {
+        // Vérifier d'abord le statut explicite
+        if ($this->statut_votes === 'en_cours') {
+            return true;
+        }
+
+        if ($this->statut_votes === 'en_attente') {
+            return false;
+        }
+
+        if ($this->statut_votes === 'termine') {
+            return false;
+        }
+
+        // Vérifier les dates si pas de statut explicite
+        $now = Carbon::now();
+        
+        if (!$this->date_debut || !$this->date_fin) {
+            return false;
+        }
+        
+        return $now->between($this->date_debut, $this->date_fin);
+    }
+
+    public function getTempsRestantAttribute()
+    {
+        if (!$this->date_fin) {
+            return null;
+        }
+
+        $now = Carbon::now();
+        $end = Carbon::parse($this->date_fin);
+        
+        if ($now > $end) {
+            return [
+                'jours' => 0,
+                'heures' => 0,
+                'minutes' => 0,
+                'secondes' => 0,
+                'total_secondes' => 0
+            ];
+        }
+
+        $diff = $now->diff($end);
+        
+        return [
+            'jours' => $diff->days,
+            'heures' => $diff->h,
+            'minutes' => $diff->i,
+            'secondes' => $diff->s,
+            'total_secondes' => $now->diffInSeconds($end)
+        ];
+    }
+
+
+    public function votes()
+    {
+        return $this->hasMany(Vote::class);
+    }
+
+    public function payments()
+    {
+        return $this->hasMany(Payment::class);
+    }
 }

@@ -4,15 +4,10 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Foundation\Auth\User as Authenticatable;
-use Illuminate\Notifications\Notifiable;
-use Laravel\Sanctum\HasApiTokens; // Ajoutez cette ligne
-use Spatie\Permission\Traits\HasRoles;
 
 class Vote extends Model
 {
-    use HasApiTokens, HasFactory, Notifiable, HasRoles, SoftDeletes; 
+    use HasFactory;
 
     protected $fillable = [
         'edition_id',
@@ -20,14 +15,18 @@ class Vote extends Model
         'votant_id',
         'categorie_id',
         'candidature_id',
+        'payment_id',
+        'is_paid',
+        'vote_price',
         'ip_address',
         'user_agent'
     ];
 
     protected $casts = [
+        'is_paid' => 'boolean',
+        'vote_price' => 'decimal:2',
         'created_at' => 'datetime',
-        'updated_at' => 'datetime',
-        'deleted_at' => 'datetime',
+        'updated_at' => 'datetime'
     ];
 
     // Relations
@@ -48,7 +47,7 @@ class Vote extends Model
 
     public function categorie()
     {
-        return $this->belongsTo(Category::class, 'categorie_id');
+        return $this->belongsTo(Category::class);
     }
 
     public function candidature()
@@ -56,24 +55,34 @@ class Vote extends Model
         return $this->belongsTo(Candidature::class);
     }
 
+    public function payment()
+    {
+        return $this->belongsTo(Payment::class);
+    }
+
     // Scopes
-    public function scopeForEdition($query, $editionId)
+    public function scopePaid($query)
     {
-        return $query->where('edition_id', $editionId);
+        return $query->where('is_paid', true);
     }
 
-    public function scopeForCategorie($query, $categorieId)
+    public function scopeFree($query)
     {
-        return $query->where('categorie_id', $categorieId);
+        return $query->where('is_paid', false);
     }
 
-    public function scopeByVotant($query, $votantId)
+    public function scopeToday($query)
     {
-        return $query->where('votant_id', $votantId);
+        return $query->whereDate('created_at', today());
     }
 
-    public function scopeForCandidat($query, $candidatId)
+    // Méthode pour créer un vote avec paiement
+    public static function createPaidVote(array $data, Payment $payment): self
     {
-        return $query->where('candidat_id', $candidatId);
+        return self::create(array_merge($data, [
+            'payment_id' => $payment->id,
+            'is_paid' => true,
+            'vote_price' => $payment->amount
+        ]));
     }
 }

@@ -35,4 +35,18 @@ return [
         ],
     ],
 
+    'fedapay' => [
+        'secret_key' => env('FEDAPAY_SECRET_KEY'),
+        'public_key' => env('FEDAPAY_PUBLIC_KEY'),
+        'environment' => env('FEDAPAY_ENVIRONMENT', 'sandbox'),
+        'webhook_secret' => env('FEDAPAY_WEBHOOK_SECRET'),
+        'api_url' => env('FEDAPAY_ENVIRONMENT') === 'sandbox' 
+            ? 'https://sandbox-api.fedapay.com/v1' 
+            : 'https://api.fedapay.com/v1',
+        'checkout_url' => env('FEDAPAY_ENVIRONMENT') === 'sandbox'
+            ? 'https://sandbox-checkout.fedapay.com'
+            : 'https://checkout.fedapay.com'
+    ],
+        
+
 ];

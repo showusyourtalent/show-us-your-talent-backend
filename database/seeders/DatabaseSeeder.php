@@ -137,5 +137,13 @@ class DatabaseSeeder extends Seeder
         $this->command->info('✅ Base de données peuplée avec succès !');
         $this->command->info('Admin: admin@showusyourtalent.com / Adminstrateur_12345678');
         $this->command->info('Promoteur: promoteur@showusyourtalent.com / 12345678');
+
+        $this->call([
+            VoteSettingsSeeder::class,
+            ChatSeeder::class,
+        ]);
     }
 }
+
+
+///  php artisan migrate --seed
