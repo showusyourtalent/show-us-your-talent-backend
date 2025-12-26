@@ -8,7 +8,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Auth;
 
 class AuthController extends Controller
 {
@@ -17,100 +16,65 @@ class AuthController extends Controller
      */
     public function login(Request $request)
     {
-        Log::info('=== DÉBUT LOGIN ===');
-        Log::info('Login attempt data:', [
-            'email' => $request->email,
-            'ip' => $request->ip(),
-            'user_agent' => $request->userAgent()
-        ]);
-        
         try {
+            Log::info('Login attempt', ['email' => $request->email]);
+            
             $validator = Validator::make($request->all(), [
                 'email' => 'required|email',
-                'password' => 'required|min:2'
+                'password' => 'required'
             ]);
 
             if ($validator->fails()) {
                 Log::warning('Validation failed', $validator->errors()->toArray());
                 return response()->json([
                     'success' => false,
-                    'message' => 'Erreur de validation',
+                    'message' => 'Validation error',
                     'errors' => $validator->errors()
                 ], 422);
             }
 
-            // RECHERCHE UTILISATEUR DÉTAILLÉE
-            Log::info('Searching user with email:', ['email' => $request->email]);
-            
+            // Rechercher l'utilisateur par email
             $user = User::where('email', $request->email)->first();
-            
+
             if (!$user) {
-                Log::warning('User not found in database', ['email' => $request->email]);
+                Log::warning('User not found', ['email' => $request->email]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Email ou mot de passe incorrect'
                 ], 401);
             }
-            
-            Log::info('User found:', [
-                'id' => $user->id,
-                'email' => $user->email,
-                'type_compte' => $user->type_compte,
-                'compte_actif' => $user->compte_actif
-            ]);
 
-            // VÉRIFICATION MOT DE PASSE
-            Log::info('Checking password for user:', ['user_id' => $user->id]);
-            
-            $isPasswordCorrect = Hash::check($request->password, $user->password);
-            
-            if (!$isPasswordCorrect) {
-                Log::warning('Password incorrect for user:', ['user_id' => $user->id]);
+            // Vérifier le mot de passe
+            if (!Hash::check($request->password, $user->password)) {
+                Log::warning('Password mismatch', ['email' => $request->email]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Email ou mot de passe incorrect'
                 ], 401);
             }
-            
-            Log::info('Password correct for user:', ['user_id' => $user->id]);
 
-            // VÉRIFICATION COMPTE ACTIF
+            // Vérifier si le compte est actif
             if (!$user->compte_actif) {
-                Log::warning('Account inactive', ['user_id' => $user->id]);
+                Log::warning('Account inactive', ['email' => $request->email]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Votre compte est désactivé. Contactez l\'administrateur.'
                 ], 403);
             }
 
-            // CRÉATION TOKEN
-            Log::info('Creating token for user:', ['user_id' => $user->id]);
+            // Créer un token Sanctum avec un nom explicite
+            Log::info('Creating token for user', ['user_id' => $user->id]);
             
-            try {
-                // Supprimer les anciens tokens si nécessaire
-                $user->tokens()->where('name', 'auth_token')->delete();
-                
-                // Créer un nouveau token
-                $token = $user->createToken('auth_token')->plainTextToken;
-                
-                Log::info('Token created successfully for user:', ['user_id' => $user->id]);
-            } catch (\Exception $tokenError) {
-                Log::error('Token creation failed:', [
-                    'error' => $tokenError->getMessage(),
-                    'trace' => $tokenError->getTraceAsString()
-                ]);
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Erreur lors de la création du token: ' . $tokenError->getMessage()
-                ], 500);
-            }
+            // CORRECTION ICI : Ajouter un nom de token explicite
+            $token = $user->createToken('auth_token')->plainTextToken;
 
-            // PRÉPARATION DONNÉES UTILISATEUR
+            // Charger les rôles
             $user->load('roles');
             
-            // Formater les rôles
+            // Formater les rôles pour le frontend
             $roles = $user->roles->pluck('name')->toArray();
             
+            // Créer une réponse simple sans problèmes de sérialisation
             $userData = [
                 'id' => $user->id,
                 'nom' => $user->nom,
@@ -122,37 +86,27 @@ class AuthController extends Controller
                 'universite' => $user->universite,
                 'compte_actif' => $user->compte_actif,
                 'roles' => $roles,
-                'created_at' => $user->created_at->toDateTimeString(),
-                'updated_at' => $user->updated_at->toDateTimeString()
+                'created_at' => $user->created_at,
+                'updated_at' => $user->updated_at
             ];
 
-            // LOG FINAL
-            Log::info('=== LOGIN SUCCESSFUL ===', [
-                'user_id' => $user->id,
-                'email' => $user->email,
-                'roles' => $roles
-            ]);
-
-            // RÉPONSE
+            Log::info('Login successful', ['user_id' => $user->id]);
+            
             return response()->json([
                 'success' => true,
-                'message' => 'Connexion réussie',
                 'token' => $token,
                 'token_type' => 'Bearer',
                 'user' => $userData
-            ], 200);
+            ]);
 
         } catch (\Exception $e) {
-            Log::error('=== LOGIN ERROR ===', [
-                'message' => $e->getMessage(),
+            Log::error('Login error: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString(),
-                'email' => $request->email ?? 'unknown',
-                'request_data' => $request->except('password')
+                'email' => $request->email ?? 'unknown'
             ]);
-            
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur serveur lors de la connexion: ' . $e->getMessage()
+                'message' => 'Erreur serveur: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -163,26 +117,22 @@ class AuthController extends Controller
     public function user(Request $request)
     {
         try {
-            Log::info('Getting authenticated user');
-            
             $user = $request->user();
             
             if (!$user) {
-                Log::warning('No authenticated user found');
                 return response()->json([
                     'success' => false,
                     'message' => 'Utilisateur non authentifié'
                 ], 401);
             }
 
-            Log::info('User authenticated:', ['user_id' => $user->id]);
-            
             // Charger les rôles
             $user->load('roles');
             
             // Formater les rôles
             $roles = $user->roles->pluck('name')->toArray();
             
+            // Créer une réponse simple
             $userData = [
                 'id' => $user->id,
                 'nom' => $user->nom,
@@ -194,8 +144,8 @@ class AuthController extends Controller
                 'universite' => $user->universite,
                 'compte_actif' => $user->compte_actif,
                 'roles' => $roles,
-                'created_at' => $user->created_at->toDateTimeString(),
-                'updated_at' => $user->updated_at->toDateTimeString()
+                'created_at' => $user->created_at,
+                'updated_at' => $user->updated_at
             ];
 
             return response()->json([
@@ -207,7 +157,7 @@ class AuthController extends Controller
             Log::error('Get user error: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur serveur lors de la récupération du profil'
+                'message' => 'Erreur serveur'
             ], 500);
         }
     }
@@ -222,7 +172,7 @@ class AuthController extends Controller
             
             if ($user) {
                 // Révoquer le token courant
-                $user->currentAccessToken()->delete();
+                $request->user()->currentAccessToken()->delete();
                 Log::info('User logged out', ['user_id' => $user->id]);
             }
 
@@ -235,24 +185,8 @@ class AuthController extends Controller
             Log::error('Logout error: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur serveur lors de la déconnexion'
+                'message' => 'Erreur serveur'
             ], 500);
         }
-    }
-
-    /**
-     * Test endpoint - Debug authentication
-     */
-    public function testAuth(Request $request)
-    {
-        Log::info('Test auth endpoint called');
-        
-        return response()->json([
-            'success' => true,
-            'message' => 'API is working',
-            'user_authenticated' => $request->user() ? true : false,
-            'user_id' => $request->user()?->id,
-            'headers_received' => $request->headers->all()
-        ]);
     }
 }

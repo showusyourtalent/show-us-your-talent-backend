@@ -51,23 +51,10 @@ class ChatParticipant extends Model
         });
     }
 
-    // Methods
+    // Method pour marquer comme vu
     public function markAsSeen()
     {
         $this->update(['last_seen_at' => now()]);
         return $this;
-    }
-
-    public function message()
-    {
-        return $this->belongsTo(ChatMessage::class, 'chat_message_id');
-    }
-
-    public function markAsRead()
-    {
-        $this->update([
-            'is_read' => true,
-            'read_at' => now()
-        ]);
     }
 }

@@ -35,17 +35,17 @@ class ChatRoom extends Model
 
     public function participants()
     {
-        return $this->hasMany(ChatParticipant::class);
+        return $this->hasMany(ChatParticipant::class, 'chat_room_id');
     }
 
     public function messages()
     {
-        return $this->hasMany(ChatMessage::class)->latest();
+        return $this->hasMany(ChatMessage::class, 'chat_room_id')->latest();
     }
 
     public function unreadMessages()
     {
-        return $this->hasMany(ChatMessage::class)->where('is_read', false);
+        return $this->hasMany(ChatMessage::class, 'chat_room_id')->where('is_read', false);
     }
 
     public function promoteurs()
@@ -74,10 +74,18 @@ class ChatRoom extends Model
         return $query->where('category_id', $categoryId);
     }
 
+    public function scopeWhereHasParticipant($query, $userId)
+    {
+        return $query->whereHas('participants', function($q) use ($userId) {
+            $q->where('user_id', $userId);
+        });
+    }
+
     // Methods
     public function addParticipant($userId, $role = 'candidat')
     {
-        return $this->participants()->create([
+        return ChatParticipant::create([
+            'chat_room_id' => $this->id,
             'user_id' => $userId,
             'role' => $role
         ]);
@@ -88,19 +96,24 @@ class ChatRoom extends Model
         return $this->participants()->where('user_id', $userId)->exists();
     }
 
-    public function notifications()
-    {
-        return $this->hasMany(ChatNotification::class);
-    }
-
     public function getUnreadCountForUser($userId)
     {
+        $participant = $this->participants()->where('user_id', $userId)->first();
+        
+        if (!$participant || !$participant->last_seen_at) {
+            return $this->messages()
+                ->where('user_id', '!=', $userId)
+                ->count();
+        }
+
         return $this->messages()
             ->where('user_id', '!=', $userId)
-            ->whereDoesntHave('readers', function($query) use ($userId) {
-                $query->where('user_id', $userId);
-            })
+            ->where('created_at', '>', $participant->last_seen_at)
             ->count();
     }
 
+    public function lastMessage()
+    {
+        return $this->hasOne(ChatMessage::class, 'chat_room_id')->latestOfMany();
+    }
 }

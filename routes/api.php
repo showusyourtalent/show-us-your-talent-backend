@@ -11,12 +11,6 @@ Route::middleware(['auth:sanctum'])->get('/user', function (Request $request) {
     return $request->user();
 });
 
-// Routes publiques
-Route::prefix('auth')->group(function () {
-    Route::post('/login', [AuthController::class, 'login']);
-    Route::post('/set-password', [AuthController::class, 'setPassword']);
-});
-
 // Routes candidat publiques
 Route::prefix('candidat')->group(function () {
     Route::get('/editions-ouvertes', [CandidatController::class, 'getEditionsOuvertes']);
@@ -134,12 +128,12 @@ Route::get('/candidats/category/{categoryId}', [AdminController::class, 'getCand
 Route::get('/candidats/search', [AdminController::class, 'search']);
 
 // routes/api.php
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', 'cors'])->group(function () {
     // Chat routes
     Route::prefix('chat')->group(function () {
         // Rooms
         Route::get('/rooms', [ChatController::class, 'getUserRooms']);
-        Route::get('/room/{categoryId}', [ChatController::class, 'getOrCreateRoom']);
+        Route::get('/room/category/{categoryId}', [ChatController::class, 'getOrCreateRoom']);
         
         // Messages
         Route::get('/room/{roomId}/messages', [ChatController::class, 'getMessages']);
@@ -147,6 +141,7 @@ Route::middleware('auth:sanctum')->group(function () {
         
         // Participants
         Route::get('/room/{roomId}/participants', [ChatController::class, 'getParticipants']);
+        Route::post('/room/{roomId}/last-seen', [ChatController::class, 'updateLastSeen']);
         
         // Notifications
         Route::get('/notifications', [ChatController::class, 'getNotifications']);
@@ -154,3 +149,59 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/notifications/read-all', [ChatController::class, 'markAllNotificationsAsRead']);
     });
 });
+
+// routes/api.php
+Route::middleware(['auth:sanctum'])->group(function () {
+    Route::get('/user', function (Request $request) {
+        return response()->json([
+            'success' => true,
+            'user' => $request->user()->load('roles')
+        ]);
+    });
+    
+    // Vos routes chat ici...
+});
+
+
+// Routes publiques
+Route::prefix('auth')->group(function () {
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/register', [AuthController::class, 'register']);
+    Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
+});
+
+// Routes protégées par Sanctum
+Route::middleware(['auth:sanctum', 'cors'])->group(function () {
+    
+    // Récupérer l'utilisateur connecté
+    Route::get('/user', [AuthController::class, 'user']);
+    
+    // Chat routes
+    Route::prefix('chat')->group(function () {
+        // Rooms
+        Route::get('/rooms', [ChatController::class, 'getUserRooms']);
+        Route::get('/room/category/{categoryId}', [ChatController::class, 'getOrCreateRoom']);
+        
+        // Messages
+        Route::get('/room/{roomId}/messages', [ChatController::class, 'getMessages']);
+        Route::post('/room/{roomId}/message', [ChatController::class, 'sendMessage']);
+        
+        // Participants
+        Route::get('/room/{roomId}/participants', [ChatController::class, 'getParticipants']);
+        Route::post('/room/{roomId}/last-seen', [ChatController::class, 'updateLastSeen']);
+        
+        // Notifications
+        Route::get('/notifications', [ChatController::class, 'getNotifications']);
+        Route::post('/notifications/{notificationId}/read', [ChatController::class, 'markNotificationAsRead']);
+        Route::post('/notifications/read-all', [ChatController::class, 'markAllNotificationsAsRead']);
+    });
+});
+
+// Route de test
+Route::get('/test', function () {
+    return response()->json([
+        'success' => true,
+        'message' => 'API is working'
+    ]);
+});
+    
