@@ -103,7 +103,7 @@ Route::get('/categories/edition/{editionId}', [CategoryController::class, 'getBy
 
 
 // Routes protégées par Sanctum
-
+Route::middleware('auth:sanctum')->group(function () {
     // Auth
     Route::prefix('auth')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
@@ -146,6 +146,7 @@ Route::get('/categories/edition/{editionId}', [CategoryController::class, 'getBy
         Route::put('/mon-profil', [CandidatController::class, 'updateProfil']);
         Route::post('/voter', [CandidatController::class, 'voter']);
     });
+});
 
 // Routes pour la gestion des votes
 Route::prefix('promoteur')->middleware(['auth:sanctum'])->group(function () {
