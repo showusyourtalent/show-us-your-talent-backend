@@ -94,7 +94,7 @@ class Edition extends Model
         } else {
             // Édition inactive
             $this->votes_ouverts = false;
-            $this->statut_votes = 'inactif';
+            $this->statut_votes = 'en_attente';
         }
     }
 

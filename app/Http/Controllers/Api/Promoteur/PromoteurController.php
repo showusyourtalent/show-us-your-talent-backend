@@ -36,6 +36,7 @@ class PromoteurController extends Controller{
             'numero_edition' => $request->numero_edition,
             'description' => $request->description,
             'statut' => 'brouillon',
+            'statut_votes' => 'en_attente',
             'promoteur_id' => $request->user()->id,
             'date_debut_inscriptions' => $request->date_debut_inscriptions,
             'date_fin_inscriptions' => $request->date_fin_inscriptions,

@@ -10,9 +10,9 @@ class VoteSettingsSeeder extends Seeder
     public function run(): void
     {
         $edition = Edition::firstOrCreate(
-            ['statut' => 'active'],
+            ['statut' => 'terminee'],
             [
-                'nom' => 'Édition 2026',
+                'nom' => 'Édition 2025',
                 'annee' => 2026,
                 'numero_edition' => 1,
                 'promoteur_id'=> 2,
