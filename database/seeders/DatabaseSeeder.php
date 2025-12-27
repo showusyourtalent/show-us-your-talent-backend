@@ -101,10 +101,12 @@ class DatabaseSeeder extends Seeder
         $admin = User::firstOrCreate(
             ['email' => 'admin@showusyourtalent.com'],
             [
+                'name' => 'Admin',
                 'nom' => 'Admin',
                 'prenoms' => 'Principal',
                 'password' => Hash::make('Adminstrateur_12345678'),
                 'type_compte' => 'admin',
+                'photo_url'   => 'logo.png',
                 'email_verified_at' => now(),
                 'compte_actif' => true,
             ]
@@ -120,9 +122,11 @@ class DatabaseSeeder extends Seeder
             ['email' => 'promoteur@showusyourtalent.com'],
             [
                 'nom' => 'Promoteur',
-                'prenoms' => 'Test',
+                'name' => 'Promoteur',
+                'prenoms' => 'SHOW US TALENT',
                 'password' => Hash::make('12345678'),
                 'type_compte' => 'promoteur',
+                'photo_url'   => 'logo.png',
                 'email_verified_at' => now(),
                 'compte_actif' => true,
             ]

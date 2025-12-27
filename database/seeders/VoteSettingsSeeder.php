@@ -9,15 +9,18 @@ class VoteSettingsSeeder extends Seeder
 {
     public function run(): void
     {
-        // 1️⃣ Récupérer ou créer l’édition active
         $edition = Edition::firstOrCreate(
             ['statut' => 'active'],
             [
-                'name' => 'Édition 2026',
-                'start_date' => now(),
-                'end_date' => now()->addMonths(1),
+                'nom' => 'Édition 2026',
+                'annee' => 2026,
+                'numero_edition' => 1,
+                'promoteur_id'=> 2,
+                'votes_ouverts' => false,
+                'statut_votes' => 'en_attente',
             ]
         );
+
 
         // 2️⃣ Créer ou mettre à jour les paramètres de vote
         VoteSetting::updateOrCreate(
