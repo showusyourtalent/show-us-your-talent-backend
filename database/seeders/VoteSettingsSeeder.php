@@ -13,7 +13,7 @@ class VoteSettingsSeeder extends Seeder
             ['statut' => 'terminee'],
             [
                 'nom' => 'Édition 2025',
-                'annee' => 2026,
+                'annee' => 2025,
                 'numero_edition' => 1,
                 'promoteur_id'=> 2,
                 'votes_ouverts' => false,
