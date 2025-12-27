@@ -19,7 +19,11 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => [env('FRONTEND_URL', 'http://localhost:5173')],
+    'allowed_origins' => [
+        env('FRONTEND_URL', 'http://localhost:5173'),
+        'https://show-us-your-talent.onrender.com',  // AJOUTEZ CECI
+        'https://show-us-your-talent-frontend.onrender.com',  // ET CECI
+    ],
 
     'allowed_origins_patterns' => [],
 
@@ -30,6 +34,5 @@ return [
     'max_age' => 0,
 
     'supports_credentials' => true,
-
 
 ];
