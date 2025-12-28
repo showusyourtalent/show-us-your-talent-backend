@@ -58,7 +58,7 @@ class CandidatController extends Controller{
             \Log::info('=== NOUVELLE CANDIDATURE ===');
             \Log::info('Headers:', $request->headers->all());
             \Log::info('Tous les champs reçus:', $request->all());
-            \Log::info('Fichier photo:', $request->hasFile('photo') ? 'OUI' : 'NON');
+            \Log::info('Fichier photo:', ['has_file' => $request->hasFile('photo')]);
             
             if ($request->hasFile('photo')) {
                 \Log::info('Photo info:', [
@@ -72,7 +72,7 @@ class CandidatController extends Controller{
                 'nom' => 'required|string|min:2|max:50',
                 'prenoms' => 'required|string|min:2|max:100',
                 'email' => 'required|email',
-                'date_naissance' => 'required|date|before:-10 years', // Changé à 10 ans
+                'date_naissance' => 'required|date|before:-10 years',
                 'sexe' => 'required|in:M,F,Autre',
                 'telephone' => 'required|string|min:8|max:20',
                 'origine' => 'required|string|max:100',
@@ -80,19 +80,15 @@ class CandidatController extends Controller{
                 'universite' => 'required|string|max:200',
                 'filiere' => 'required|string|max:200',
                 'annee_etude' => 'required|string',
-
                 'edition_id' => 'required|exists:editions,id',
                 'category_id' => 'required|exists:categories,id',
-
                 'video_url' => 'required|url|max:500',
-
-                'description_talent' => 'nullable|string|max:2000', // Changé à nullable
-
+                'description_talent' => 'nullable|string|max:2000',
                 'photo' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
             ]);
 
             if ($validator->fails()) {
-                \Log::error('Validation failed', $validator->errors()->toArray());
+                \Log::error('Validation failed', ['errors' => $validator->errors()->toArray()]);
                 return response()->json([
                     'success' => false,
                     'errors' => $validator->errors()
@@ -105,9 +101,8 @@ class CandidatController extends Controller{
             $edition = Edition::findOrFail($data['edition_id']);
             \Log::info('Édition trouvée:', ['id' => $edition->id, 'nom' => $edition->nom]);
 
-            // Vérifier si les inscriptions sont ouvertes
             if (!$edition->inscriptions_ouvertes || $edition->date_fin_inscriptions < now()) {
-                \Log::warning('Inscriptions fermées pour édition:', ['edition_id' => $edition->id]);
+                \Log::warning('Inscriptions fermées pour édition', ['edition_id' => $edition->id]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Les inscriptions sont fermées pour cette édition.'
@@ -121,7 +116,7 @@ class CandidatController extends Controller{
             ])->first();
 
             if (!$category) {
-                \Log::warning('Catégorie invalide:', [
+                \Log::warning('Catégorie invalide', [
                     'category_id' => $data['category_id'],
                     'edition_id' => $edition->id
                 ]);
@@ -147,21 +142,20 @@ class CandidatController extends Controller{
             );
 
             $photoCloudUrl = $upload['secure_url'];
-            \Log::info('Photo uploadée:', ['url' => $photoCloudUrl]);
+            \Log::info('Photo uploadée', ['url' => $photoCloudUrl]);
 
             // Chercher ou créer l'utilisateur
-            \Log::info('Recherche de l\'utilisateur par email:', ['email' => $data['email']]);
             $user = User::where('email', $data['email'])->first();
 
             if (!$user) {
                 \Log::info('Création d\'un nouvel utilisateur...');
                 
-                // Préparer les données utilisateur
+                // Vérifier les champs requis pour PostgreSQL
                 $userData = [
                     'nom' => $data['nom'],
                     'prenoms' => $data['prenoms'],
                     'email' => $data['email'],
-                    'password' => Hash::make($data['nom'] . $data['prenoms'] . time()), // Mot de passe plus sécurisé
+                    'password' => Hash::make(Str::random(12)), // Mot de passe aléatoire
                     'date_naissance' => $data['date_naissance'],
                     'sexe' => $data['sexe'],
                     'telephone' => $data['telephone'],
@@ -173,16 +167,14 @@ class CandidatController extends Controller{
                     'type_compte' => 'candidat',
                     'compte_actif' => false,
                     'photo_url' => $photoCloudUrl,
-                    'email_verified_at' => null, // Important pour PostgreSQL
+                    'email_verified_at' => null,
                     'remember_token' => null,
-                    'created_at' => now(),
-                    'updated_at' => now(),
                 ];
                 
                 \Log::info('Données utilisateur à créer:', $userData);
                 
                 $user = User::create($userData);
-                \Log::info('Utilisateur créé avec ID:', ['id' => $user->id]);
+                \Log::info('Utilisateur créé', ['id' => $user->id]);
 
                 $user->assignRole('candidat');
 
@@ -192,9 +184,13 @@ class CandidatController extends Controller{
                     $user->id
                 );
                 $user->save();
-                \Log::info('Matricule généré:', ['matricule' => $user->matricule]);
+                \Log::info('Matricule généré', ['matricule' => $user->matricule]);
             } else {
-                \Log::info('Utilisateur existant trouvé:', ['id' => $user->id, 'email' => $user->email]);
+                \Log::info('Utilisateur existant trouvé', ['id' => $user->id, 'email' => $user->email]);
+                
+                // Mettre à jour la photo si elle a changé
+                $user->photo_url = $photoCloudUrl;
+                $user->save();
             }
 
             // Vérifier si candidature existe déjà
@@ -205,7 +201,7 @@ class CandidatController extends Controller{
             ])->exists();
 
             if ($alreadyExists) {
-                \Log::warning('Candidature existe déjà:', [
+                \Log::warning('Candidature existe déjà', [
                     'user_id' => $user->id,
                     'edition_id' => $edition->id,
                     'category_id' => $category->id
@@ -225,14 +221,12 @@ class CandidatController extends Controller{
                 'description_talent' => $data['description_talent'] ?? null,
                 'statut' => 'en_attente',
                 'phase_actuelle' => 1,
-                'created_at' => now(),
-                'updated_at' => now(),
             ];
             
             \Log::info('Données candidature:', $candidatureData);
             
             $candidature = Candidature::create($candidatureData);
-            \Log::info('Candidature créée avec ID:', ['id' => $candidature->id]);
+            \Log::info('Candidature créée', ['id' => $candidature->id]);
 
             DB::commit();
 
@@ -258,14 +252,14 @@ class CandidatController extends Controller{
         } catch (\Exception $e) {
             DB::rollBack();
             \Log::error('=== ERREUR CANDIDATURE ===');
-            \Log::error('Message:', ['error' => $e->getMessage()]);
-            \Log::error('File:', ['file' => $e->getFile()]);
-            \Log::error('Line:', ['line' => $e->getLine()]);
-            \Log::error('Trace:', ['trace' => $e->getTraceAsString()]);
+            \Log::error('Message', ['error' => $e->getMessage()]);
+            \Log::error('File', ['file' => $e->getFile()]);
+            \Log::error('Line', ['line' => $e->getLine()]);
+            \Log::error('Trace', ['trace' => $e->getTraceAsString()]);
             
             // Log spécifique pour les erreurs SQL
             if (str_contains($e->getMessage(), 'SQLSTATE')) {
-                \Log::error('SQL ERROR DETAILS:', [
+                \Log::error('SQL ERROR DETAILS', [
                     'full_message' => $e->getMessage(),
                     'sql_state' => $e->getCode()
                 ]);
@@ -274,12 +268,7 @@ class CandidatController extends Controller{
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur lors de la soumission de la candidature.',
-                'error' => $e->getMessage(),
-                'debug' => env('APP_DEBUG') ? [
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                    'trace' => $e->getTraceAsString()
-                ] : null
+                'error' => env('APP_DEBUG') ? $e->getMessage() : 'Erreur interne du serveur'
             ], 500);
         }
     }
