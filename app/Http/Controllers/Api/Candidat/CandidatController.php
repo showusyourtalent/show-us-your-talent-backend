@@ -267,7 +267,7 @@ class CandidatController extends Controller{
 
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur lors de la soumission de la candidature.',
+                'message' => 'Erreur lors de la soumission de la candidature.'.$e->getMessage(),
                 'error' => env('APP_DEBUG') ? $e->getMessage() : 'Erreur interne du serveur'
             ], 500);
         }
