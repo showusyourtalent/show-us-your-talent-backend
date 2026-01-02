@@ -325,4 +325,9 @@ Route::prefix('candidat/dashboard')->group(function () {
         
     // Statistiques détaillées par édition/catégorie
     Route::get('/stats/detailed', [DashboardCandidatController::class, 'getDetailedStats']);
+    Route::get('/votes', [DashboardCandidatController::class, 'getVotesList']);
+    Route::get('/votes/export', [DashboardCandidatController::class, 'exportVotes']);
+    Route::get('/payments', [DashboardCandidatController::class, 'getPayments']);
+    Route::get('/top-votants', [DashboardCandidatController::class, 'getTopVotants']);
+    Route::get('/votes/evolution', [DashboardCandidatController::class, 'getVotesEvolution']);
 });
