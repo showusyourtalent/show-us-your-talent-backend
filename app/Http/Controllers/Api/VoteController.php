@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Vote;
+use App\Models\Payment;
 use App\Models\VoteSetting;
 use App\Models\Candidature;
 use App\Models\Edition;
@@ -17,13 +18,13 @@ use Illuminate\Support\Facades\Validator;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 
+
 class VoteController extends Controller
 {
     /**
      * Voter pour un candidat
      */
-    public function vote(Request $request): JsonResponse
-    {
+    public function vote(Request $request): JsonResponse{
         try {
             $validator = Validator::make($request->all(), [
                 'candidat_id' => 'required|exists:users,id',
@@ -93,25 +94,72 @@ class VoteController extends Controller
     /**
      * Historique des votes
      */
-    public function voteHistory(Request $request): JsonResponse
-    {
+    public function voteHistory(Request $request): JsonResponse{
         try {
             $user = auth()->user();
             $perPage = $request->get('per_page', 10);
             
-            $votes = Vote::where('votant_id', $user->id)
-                ->with(['candidat', 'edition', 'category', 'payment'])
+            // Récupérer les paiements où l'utilisateur est le candidat
+            $payments = Payment::where('candidat_id', $user->id)
+                ->with(['edition', 'candidat', 'category'])
                 ->orderBy('created_at', 'desc')
                 ->paginate($perPage);
 
+            // Transformer les données pour garder le même format que l'ancien code
+            $transformedPayments = $payments->map(function ($payment) {
+                return [
+                    'id' => $payment->id,
+                    'reference' => $payment->reference,
+                    'amount' => $payment->amount,
+                    'currency' => $payment->currency,
+                    'status' => $payment->status,
+                    'payment_method' => $payment->payment_method,
+                    'created_at' => $payment->created_at,
+                    'updated_at' => $payment->updated_at,
+                    'edition' => $payment->edition ? [
+                        'id' => $payment->edition->id,
+                        'nom' => $payment->edition->nom,
+                        'annee' => $payment->edition->annee
+                    ] : null,
+                    'candidat' => $payment->candidat ? [
+                        'id' => $payment->candidat->id,
+                        'nom' => $payment->candidat->nom,
+                        'prenoms' => $payment->candidat->prenoms,
+                        'photo_url' => $payment->candidat->photo_url
+                    ] : null,
+                    'category' => $payment->category ? [
+                        'id' => $payment->category->id,
+                        'nom' => $payment->category->nom,
+                        'slug' => $payment->category->slug
+                    ] : null,
+                    // Informations supplémentaires du metadata
+                    'metadata' => $payment->metadata,
+                    'votes_count' => $payment->metadata['votes_count'] ?? 1,
+                    'is_paid' => $payment->status === 'approved',
+                    'votant' => [
+                        'email' => $payment->customer_email,
+                        'phone' => $payment->customer_phone,
+                        'firstname' => $payment->customer_firstname,
+                        'lastname' => $payment->customer_lastname
+                    ]
+                ];
+            });
+
             return response()->json([
                 'success' => true,
-                'data' => $votes
+                'data' => [
+                    'data' => $transformedPayments,
+                    'current_page' => $payments->currentPage(),
+                    'last_page' => $payments->lastPage(),
+                    'per_page' => $payments->perPage(),
+                    'total' => $payments->total()
+                ]
             ]);
 
         } catch (\Exception $e) {
             Log::error('Erreur historique votes', [
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
@@ -122,36 +170,48 @@ class VoteController extends Controller
     }
 
     /**
-     * Statistiques de l'utilisateur
+     * Statistiques de l'utilisateur (votant)
      */
-    public function getUserStatistics(Request $request): JsonResponse
-    {
+    public function getUserStatistics(Request $request): JsonResponse {
         try {
             $user = auth()->user();
             $editionId = $request->get('edition_id');
 
-            $query = Vote::where('votant_id', $user->id);
+            // Utiliser l'email de l'utilisateur pour trouver ses paiements
+            $query = Payment::where('customer_email', $user->email);
             
             if ($editionId) {
                 $query->where('edition_id', $editionId);
             }
 
+            // Calculer les statistiques à partir des paiements
+            $allPayments = $query->get();
+            $approvedPayments = $allPayments->where('status', 'approved');
+            $cancelledPayments = $allPayments->where('status', 'cancelled');
+            $failedPayments = $allPayments->whereIn('status', ['failed', 'error']);
+            $pendingPayments = $allPayments->where('status', 'pending');
+
+            $totalVotes = $approvedPayments->sum(function ($payment) {
+                return $payment->metadata['votes_count'] ?? 1;
+            });
+
+            $totalAmount = $approvedPayments->sum('amount');
+
             $statistics = [
-                'total_votes' => $query->count(),
-                'paid_votes' => $query->where('is_paid', true)->count(),
-                'free_votes' => $query->where('is_paid', false)->count(),
-                'total_amount' => $query->where('is_paid', true)->sum('amount'),
-                'votes_today' => $query->whereDate('created_at', Carbon::today())->count(),
-                'favorite_category' => $query->select('categorie_id')
-                    ->selectRaw('COUNT(*) as count')
-                    ->groupBy('categorie_id')
-                    ->orderByDesc('count')
-                    ->first(),
-                'favorite_candidat' => $query->select('candidat_id')
-                    ->selectRaw('COUNT(*) as count')
-                    ->groupBy('candidat_id')
-                    ->orderByDesc('count')
-                    ->first()
+                'total_payments' => $allPayments->count(),
+                'total_votes' => $totalVotes,
+                'paid_votes' => $totalVotes, // Tous les votes sont payants dans payments
+                'free_votes' => 0, // Pas de votes gratuits dans payments
+                'total_amount' => $totalAmount,
+                'payments_today' => $query->whereDate('created_at', Carbon::today())->count(),
+                'approved_payments' => $approvedPayments->count(),
+                'cancelled_payments' => $cancelledPayments->count(),
+                'failed_payments' => $failedPayments->count(),
+                'pending_payments' => $pendingPayments->count(),
+                // Catégorie favorite basée sur les votes
+                'favorite_category' => $this->getFavoriteCategory($approvedPayments),
+                // Candidat favori basé sur les votes
+                'favorite_candidat' => $this->getFavoriteCandidat($approvedPayments)
             ];
 
             return response()->json([
@@ -161,7 +221,8 @@ class VoteController extends Controller
 
         } catch (\Exception $e) {
             Log::error('Erreur statistiques utilisateur', [
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
@@ -172,10 +233,356 @@ class VoteController extends Controller
     }
 
     /**
+     * Obtenir les statistiques de votes pour un candidat
+     */
+    public function getStats($candidatureId): JsonResponse
+    {
+        try {
+            $candidature = Candidature::with(['edition', 'category'])->findOrFail($candidatureId);
+            $user = Auth::user();
+            
+            // Vérifier que le candidat a accès à ces statistiques
+            if ($candidature->candidat_id !== $user->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Accès non autorisé'
+                ], 403);
+            }
+            
+            // Récupérer tous les paiements pour cette candidature
+            $payments = Payment::where('candidat_id', $user->id)
+                ->where('category_id', $candidature->category_id)
+                ->where('edition_id', $candidature->edition_id)
+                ->get();
+
+            // Calculer le nombre total de votes à partir des paiements approuvés
+            $approvedPayments = $payments->where('status', 'approved');
+            $totalVotesFromPayments = $approvedPayments->sum(function ($payment) {
+                return $payment->metadata['votes_count'] ?? 1;
+            });
+
+            $stats = [
+                'total_votes' => $candidature->nombre_votes,
+                'votes_from_payments' => $totalVotesFromPayments,
+                'votes_payants' => $totalVotesFromPayments, // Tous les votes de payments sont payants
+                'votes_gratuits' => 0, // Pas de votes gratuits dans payments
+                'votes_aujourdhui' => $approvedPayments->where('created_at', '>=', Carbon::today())->sum(function ($payment) {
+                    return $payment->metadata['votes_count'] ?? 1;
+                }),
+                'votes_7jours' => $approvedPayments->where('created_at', '>=', now()->subDays(7))->sum(function ($payment) {
+                    return $payment->metadata['votes_count'] ?? 1;
+                }),
+                'votes_30jours' => $approvedPayments->where('created_at', '>=', now()->subDays(30))->sum(function ($payment) {
+                    return $payment->metadata['votes_count'] ?? 1;
+                }),
+                'total_payments' => $payments->count(),
+                'approved_payments' => $approvedPayments->count(),
+                'total_amount' => $approvedPayments->sum('amount'),
+                'average_amount' => $approvedPayments->avg('amount')
+            ];
+            
+            return response()->json([
+                'success' => true,
+                'data' => $stats
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Erreur statistiques candidat', [
+                'error' => $e->getMessage(),
+                'candidature_id' => $candidatureId
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la récupération des statistiques'
+            ], 500);
+        }
+    }
+
+    /**
+     * Obtenir la liste des votes pour un candidat (avec pagination)
+     */
+    public function getVotesList(Request $request, $editionId = null, $categoryId = null): JsonResponse
+    {
+        try {
+            $user = Auth::user();
+            $perPage = $request->get('per_page', 15);
+            
+            // Récupérer les paiements pour ce candidat
+            $query = Payment::where('candidat_id', $user->id)
+                ->with(['edition', 'category', 'candidat']);
+            
+            if ($editionId) {
+                $query->where('edition_id', $editionId);
+            }
+            
+            if ($categoryId) {
+                $query->where('category_id', $categoryId);
+            }
+            
+            $payments = $query->orderBy('created_at', 'desc')
+                ->paginate($perPage);
+
+            // Transformer les paiements en format "votes" pour le frontend
+            $transformedPayments = $payments->map(function ($payment) {
+                $votesCount = $payment->metadata['votes_count'] ?? 1;
+                
+                return [
+                    'id' => $payment->id,
+                    'reference' => $payment->reference,
+                    'amount' => $payment->amount,
+                    'votes_count' => $votesCount,
+                    'status' => $payment->status,
+                    'payment_method' => $payment->payment_method,
+                    'created_at' => $payment->created_at,
+                    'updated_at' => $payment->updated_at,
+                    'is_paid' => $payment->status === 'approved',
+                    // Informations de l'édition
+                    'edition' => $payment->edition ? [
+                        'id' => $payment->edition->id,
+                        'nom' => $payment->edition->nom,
+                        'annee' => $payment->edition->annee
+                    ] : null,
+                    // Informations de la catégorie
+                    'categorie' => $payment->category ? [
+                        'id' => $payment->category->id,
+                        'nom' => $payment->category->nom,
+                        'slug' => $payment->category->slug
+                    ] : null,
+                    // Informations du votant
+                    'votant' => [
+                        'email' => $payment->customer_email,
+                        'phone' => $payment->customer_phone,
+                        'firstname' => $payment->customer_firstname,
+                        'lastname' => $payment->customer_lastname,
+                        'fullname' => $payment->customer_firstname . ' ' . $payment->customer_lastname
+                    ],
+                    // Informations du candidat
+                    'candidat' => $payment->candidat ? [
+                        'id' => $payment->candidat->id,
+                        'nom' => $payment->candidat->nom,
+                        'prenoms' => $payment->candidat->prenoms
+                    ] : null,
+                    // Metadata complet
+                    'metadata' => $payment->metadata
+                ];
+            });
+
+            return response()->json([
+                'success' => true,
+                'data' => $transformedPayments,
+                'pagination' => [
+                    'total' => $payments->total(),
+                    'per_page' => $payments->perPage(),
+                    'current_page' => $payments->currentPage(),
+                    'last_page' => $payments->lastPage(),
+                    'from' => $payments->firstItem(),
+                    'to' => $payments->lastItem()
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Erreur liste votes candidat', [
+                'error' => $e->getMessage(),
+                'edition_id' => $editionId,
+                'category_id' => $categoryId
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la récupération de la liste des votes'
+            ], 500);
+        }
+    }
+
+    /**
+     * Obtenir le classement pour une édition/catégorie
+     */
+    public function getClassement(Request $request, $editionId = null, $categoryId = null): JsonResponse
+    {
+        try {
+            $user = Auth::user();
+            
+            // Récupérer les candidatures de l'utilisateur
+            $userCandidatures = Candidature::where('candidat_id', $user->id)
+                ->when($editionId, function ($q) use ($editionId) {
+                    return $q->where('edition_id', $editionId);
+                })
+                ->when($categoryId, function ($q) use ($categoryId) {
+                    return $q->where('category_id', $categoryId);
+                })
+                ->get();
+            
+            if ($userCandidatures->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'data' => [],
+                    'user_position' => null
+                ]);
+            }
+            
+            // Récupérer le classement complet des candidatures
+            $query = Candidature::where('statut', 'validee')
+                ->with(['candidat', 'category', 'edition']);
+                
+            if ($editionId) {
+                $query->where('edition_id', $editionId);
+            }
+            
+            if ($categoryId) {
+                $query->where('category_id', $categoryId);
+            }
+            
+            $classement = $query->orderBy('nombre_votes', 'desc')
+                ->orderBy('created_at', 'asc')
+                ->get()
+                ->map(function ($candidature, $index) {
+                    return [
+                        'position' => $index + 1,
+                        'candidat_id' => $candidature->candidat_id,
+                        'candidat_nom' => $candidature->candidat->nom,
+                        'candidat_prenoms' => $candidature->candidat->prenoms,
+                        'candidature_id' => $candidature->id,
+                        'votes' => $candidature->nombre_votes,
+                        'category' => $candidature->category->nom ?? 'Non spécifiée',
+                        'edition' => $candidature->edition->nom ?? 'Non spécifiée',
+                        'photo_url' => $candidature->candidat->photo_url,
+                        // Informations supplémentaires pour le frontend
+                        'statut' => $candidature->statut,
+                        'created_at' => $candidature->created_at
+                    ];
+                });
+            
+            // Trouver la position de l'utilisateur
+            $userPosition = null;
+            foreach ($classement as $item) {
+                if ($userCandidatures->contains('id', $item['candidature_id'])) {
+                    $userPosition = $item;
+                    break;
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'data' => $classement,
+                'user_position' => $userPosition,
+                'total_participants' => $classement->count()
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Erreur classement', [
+                'error' => $e->getMessage(),
+                'edition_id' => $editionId,
+                'category_id' => $categoryId
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la récupération du classement'
+            ], 500);
+        }
+    }
+
+    /**
+     * Récupérer les votes pour un candidat (vue candidat) - Alias de getVotesList
+     */
+    public function getVotesForCandidat(Request $request, $editionId = null, $categoryId = null): JsonResponse
+    {
+        return $this->getVotesList($request, $editionId, $categoryId);
+    }
+
+    /**
+     * Méthode privée pour obtenir la catégorie favorite d'un utilisateur
+     */
+    private function getFavoriteCategory($payments)
+    {
+        if ($payments->isEmpty()) {
+            return null;
+        }
+
+        $categoryCounts = [];
+        
+        foreach ($payments as $payment) {
+            $categoryId = $payment->category_id;
+            $votesCount = $payment->metadata['votes_count'] ?? 1;
+            
+            if ($categoryId) {
+                if (!isset($categoryCounts[$categoryId])) {
+                    $categoryCounts[$categoryId] = 0;
+                }
+                $categoryCounts[$categoryId] += $votesCount;
+            }
+        }
+        
+        if (empty($categoryCounts)) {
+            return null;
+        }
+        
+        $maxCategoryId = array_keys($categoryCounts, max($categoryCounts))[0];
+        
+        // Récupérer les informations de la catégorie
+        $category = \App\Models\Category::find($maxCategoryId);
+        
+        if (!$category) {
+            return null;
+        }
+        
+        return [
+            'id' => $category->id,
+            'nom' => $category->nom,
+            'count' => $categoryCounts[$maxCategoryId]
+        ];
+    }
+
+    /**
+     * Méthode privée pour obtenir le candidat favori d'un utilisateur
+     */
+    private function getFavoriteCandidat($payments)
+    {
+        if ($payments->isEmpty()) {
+            return null;
+        }
+
+        $candidatCounts = [];
+        
+        foreach ($payments as $payment) {
+            $candidatId = $payment->candidat_id;
+            $votesCount = $payment->metadata['votes_count'] ?? 1;
+            
+            if ($candidatId) {
+                if (!isset($candidatCounts[$candidatId])) {
+                    $candidatCounts[$candidatId] = 0;
+                }
+                $candidatCounts[$candidatId] += $votesCount;
+            }
+        }
+        
+        if (empty($candidatCounts)) {
+            return null;
+        }
+        
+        $maxCandidatId = array_keys($candidatCounts, max($candidatCounts))[0];
+        
+        // Récupérer les informations du candidat
+        $candidat = \App\Models\User::find($maxCandidatId);
+        
+        if (!$candidat) {
+            return null;
+        }
+        
+        return [
+            'id' => $candidat->id,
+            'nom' => $candidat->nom,
+            'prenoms' => $candidat->prenoms,
+            'count' => $candidatCounts[$maxCandidatId]
+        ];
+    }
+
+
+    /**
      * Obtenir les candidats d'une édition
      */
-    public function getCandidats($editionId): JsonResponse
-    {
+    public function getCandidats($editionId): JsonResponse {
         try {
             $edition = Edition::with(['categories.candidats' => function($query) {
                 $query->with(['user', 'votes']);
@@ -219,11 +626,7 @@ class VoteController extends Controller
         }
     }
 
-    /**
-     * Statistiques de l'édition
-     */
-    public function getEditionStatistics($editionId): JsonResponse
-    {
+    public function getEditionStatistics($editionId): JsonResponse{
         try {
             $edition = Edition::findOrFail($editionId);
 
@@ -270,11 +673,7 @@ class VoteController extends Controller
         }
     }
 
-    /**
-     * Obtenir les catégories
-     */
-    public function getCategories(Request $request): JsonResponse
-    {
+    public function getCategories(Request $request): JsonResponse{
         try {
             $editionId = $request->get('edition_id');
             
@@ -305,11 +704,7 @@ class VoteController extends Controller
         }
     }
 
-    /**
-     * Méthodes privées
-     */
-    private function validateVoteLimits($userId, array $data, VoteSetting $voteSetting, $votesCount): void
-    {
+    private function validateVoteLimits($userId, array $data, VoteSetting $voteSetting, $votesCount): void{
         // Limite par utilisateur
         if ($voteSetting->max_votes_per_user) {
             $userVotesCount = Vote::where('votant_id', $userId)
@@ -347,8 +742,7 @@ class VoteController extends Controller
         }
     }
 
-    private function handlePaidVote($user, array $data, $votesCount, VoteSetting $voteSetting, Request $request): JsonResponse
-    {
+    private function handlePaidVote($user, array $data, $votesCount, VoteSetting $voteSetting, Request $request): JsonResponse{
         // Vérifier les informations de paiement
         if (!$user->email || !$user->telephone) {
             throw new \Exception('Veuillez compléter vos informations de contact (email et téléphone) avant de voter.');
@@ -489,167 +883,5 @@ class VoteController extends Controller
             'message' => 'Vote enregistré avec succès',
             'data' => $vote
         ]);
-    }
-
-    // Obtenir les statistiques de votes pour un candidat
-    public function getStats($candidatureId)
-    {
-        $candidature = Candidature::with(['edition', 'category'])->findOrFail($candidatureId);
-        $user = Auth::user();
-        
-        // Vérifier que le candidat a accès à ces statistiques
-        if ($candidature->candidat_id !== $user->id) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Accès non autorisé'
-            ], 403);
-        }
-        
-        $stats = [
-            'total_votes' => $candidature->nombre_votes,
-            'votes_payants' => Vote::where('candidature_id', $candidatureId)
-                ->where('is_paid', true)
-                ->count(),
-            'votes_gratuits' => Vote::where('candidature_id', $candidatureId)
-                ->where('is_paid', false)
-                ->count(),
-            'votes_aujourdhui' => Vote::where('candidature_id', $candidatureId)
-                ->whereDate('created_at', today())
-                ->count(),
-            'votes_7jours' => Vote::where('candidature_id', $candidatureId)
-                ->where('created_at', '>=', now()->subDays(7))
-                ->count(),
-            'votes_30jours' => Vote::where('candidature_id', $candidatureId)
-                ->where('created_at', '>=', now()->subDays(30))
-                ->count(),
-        ];
-        
-        return response()->json([
-            'success' => true,
-            'data' => $stats
-        ]);
-    }
-
-    // Obtenir la liste des votes pour un candidat (avec pagination)
-    public function getVotesList(Request $request, $editionId = null, $categoryId = null)
-    {
-        $user = Auth::user();
-        
-        // Récupérer les candidatures de l'utilisateur
-        $query = Candidature::where('candidat_id', $user->id);
-        
-        if ($editionId) {
-            $query->where('edition_id', $editionId);
-        }
-        
-        if ($categoryId) {
-            $query->where('category_id', $categoryId);
-        }
-        
-        $candidatures = $query->pluck('id');
-        
-        if ($candidatures->isEmpty()) {
-            return response()->json([
-                'success' => true,
-                'data' => [],
-                'pagination' => [
-                    'total' => 0,
-                    'per_page' => 15,
-                    'current_page' => 1,
-                    'last_page' => 1
-                ]
-            ]);
-        }
-        
-        // Récupérer les votes avec pagination
-        $votes = Vote::whereIn('candidature_id', $candidatures)
-            ->with(['votant', 'edition', 'categorie', 'payment'])
-            ->orderBy('created_at', 'desc')
-            ->paginate(15);
-        
-        return response()->json([
-            'success' => true,
-            'data' => $votes->items(),
-            'pagination' => [
-                'total' => $votes->total(),
-                'per_page' => $votes->perPage(),
-                'current_page' => $votes->currentPage(),
-                'last_page' => $votes->lastPage()
-            ]
-        ]);
-    }
-
-    // Obtenir le classement pour une édition/catégorie
-    public function getClassement(Request $request, $editionId = null, $categoryId = null)
-    {
-        $user = Auth::user();
-        
-        // Récupérer les candidatures de l'utilisateur
-        $userCandidatures = Candidature::where('candidat_id', $user->id)
-            ->when($editionId, function($q) use ($editionId) {
-                return $q->where('edition_id', $editionId);
-            })
-            ->when($categoryId, function($q) use ($categoryId) {
-                return $q->where('category_id', $categoryId);
-            })
-            ->get();
-        
-        if ($userCandidatures->isEmpty()) {
-            return response()->json([
-                'success' => true,
-                'data' => [],
-                'user_position' => null
-            ]);
-        }
-        
-        // Récupérer le classement complet
-        $query = Candidature::where('statut', 'validee')
-            ->with(['candidat', 'category']);
-            
-        if ($editionId) {
-            $query->where('edition_id', $editionId);
-        }
-        
-        if ($categoryId) {
-            $query->where('category_id', $categoryId);
-        }
-        
-        $classement = $query->orderBy('nombre_votes', 'desc')
-            ->orderBy('created_at', 'asc')
-            ->get()
-            ->map(function ($candidature, $index) {
-                return [
-                    'position' => $index + 1,
-                    'candidat_id' => $candidature->candidat_id,
-                    'candidat_nom' => $candidature->candidat->nom,
-                    'candidat_prenoms' => $candidature->candidat->prenoms,
-                    'candidature_id' => $candidature->id,
-                    'votes' => $candidature->nombre_votes,
-                    'category' => $candidature->category->nom ?? 'Non spécifiée',
-                    'photo_url' => $candidature->candidat->photo_url,
-                ];
-            });
-        
-        // Trouver la position de l'utilisateur
-        $userPosition = null;
-        foreach ($classement as $item) {
-            if ($userCandidatures->contains('id', $item['candidature_id'])) {
-                $userPosition = $item;
-                break;
-            }
-        }
-        
-        return response()->json([
-            'success' => true,
-            'data' => $classement,
-            'user_position' => $userPosition,
-            'total_participants' => $classement->count()
-        ]);
-    }
-
-    // Récupérer les votes pour un candidat (vue candidat)
-    public function getVotesForCandidat(Request $request, $editionId = null, $categoryId = null)
-    {
-        return $this->getVotesList($request, $editionId, $categoryId);
     }
 }
