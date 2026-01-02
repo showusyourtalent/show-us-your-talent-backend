@@ -17,159 +17,9 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 
-class ChatController extends Controller
-{
-    /**
-     * Get user's chat rooms based on their role
-     */
-    public function getUserRooms(Request $request){
-        try {
-            $user = $request->user();
-            if (!$user) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Utilisateur non authentifié'
-                ], 401);
-            }
 
-            $edition = Edition::where('statut', 'active')->latest()->first();
+class ChatController extends Controller{
 
-            if (!$edition) {
-                return response()->json([
-                    'success' => true,
-                    'rooms' => [],
-                    'message' => 'Aucune édition active'
-                ]);
-            }
-
-            // DEBUG: Log pour voir ce qui se passe
-            \Log::info('Récupération rooms pour utilisateur', [
-                'user_id' => $user->id,
-                'type_compte' => $user->type_compte,
-                'edition_id' => $edition->id,
-                'edition_nom' => $edition->nom
-            ]);
-
-            $isPromoteur = $edition->promoteur_id === $user->id;
-            
-            if ($user->type_compte === 'promoteur' && $isPromoteur) {
-                // Le promoteur voit TOUTES les rooms de l'édition active
-                $rooms = ChatRoom::where('edition_id', $edition->id)
-                    ->where('status', 'active')
-                    ->with([
-                        'category' => function($query) {
-                            $query->select('id', 'nom', 'description');
-                        },
-                        'lastMessage.user' => function($query) {
-                            $query->select('id', 'nom', 'prenoms', 'photo_url');
-                        },
-                        'participants.user' => function($query) {
-                            $query->select('id', 'nom', 'prenoms', 'photo_url', 'type_compte');
-                        }
-                    ])
-                    ->get()
-                    ->map(function($room) use ($user) {
-                        return $this->formatRoom($room, $user);
-                    });
-            } 
-            else {
-                // Pour les candidats, vérifier d'abord s'ils ont des candidatures validées
-                if ($user->type_compte === 'candidat') {
-                    $candidatures = Candidature::where('candidat_id', $user->id)
-                        ->where('edition_id', $edition->id)
-                        ->where('statut', 'validée')
-                        ->pluck('category_id')
-                        ->toArray();
-
-                    \Log::info('Candidatures validées pour l\'utilisateur', [
-                        'user_id' => $user->id,
-                        'candidatures' => $candidatures
-                    ]);
-
-                    // Si pas de candidatures validées, retourner un tableau vide
-                    if (empty($candidatures)) {
-                        return response()->json([
-                            'success' => true,
-                            'rooms' => [],
-                            'message' => 'Aucune candidature validée pour cette édition'
-                        ]);
-                    }
-
-                    $rooms = ChatRoom::where('edition_id', $edition->id)
-                        ->where('status', 'active')
-                        ->whereIn('category_id', $candidatures)
-                        ->with([
-                            'category' => function($query) {
-                                $query->select('id', 'nom', 'description');
-                            },
-                            'lastMessage.user' => function($query) {
-                                $query->select('id', 'nom', 'prenoms', 'photo_url');
-                            },
-                            'participants.user' => function($query) {
-                                $query->select('id', 'nom', 'prenoms', 'photo_url', 'type_compte');
-                            }
-                        ])
-                        ->get()
-                        ->map(function($room) use ($user) {
-                            // S'assurer que l'utilisateur est bien participant
-                            if (!$room->participants->contains('user_id', $user->id)) {
-                                // Ajouter l'utilisateur comme participant s'il ne l'est pas
-                                $room->addParticipant($user->id, $user->type_compte);
-                                // Recharger les participants
-                                $room->load('participants.user');
-                            }
-                            return $this->formatRoom($room, $user);
-                        });
-                } else {
-                    // Pour les autres types d'utilisateurs
-                    $rooms = ChatRoom::where('edition_id', $edition->id)
-                        ->where('status', 'active')
-                        ->whereHas('participants', function($query) use ($user) {
-                            $query->where('user_id', $user->id);
-                        })
-                        ->with([
-                            'category' => function($query) {
-                                $query->select('id', 'nom', 'description');
-                            },
-                            'lastMessage.user' => function($query) {
-                                $query->select('id', 'nom', 'prenoms', 'photo_url');
-                            },
-                            'participants.user' => function($query) {
-                                $query->select('id', 'nom', 'prenoms', 'photo_url', 'type_compte');
-                            }
-                        ])
-                        ->get()
-                        ->map(function($room) use ($user) {
-                            return $this->formatRoom($room, $user);
-                        });
-                }
-            }
-
-            \Log::info('Rooms retournées', [
-                'count' => count($rooms),
-                'rooms_ids' => $rooms->pluck('id')
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'rooms' => $rooms,
-                'edition' => $edition->nom,
-                'user_type' => $user->type_compte
-            ]);
-
-        } catch (\Exception $e) {
-            \Log::error('Erreur récupération rooms: ' . $e->getMessage());
-            \Log::error('Stack trace: ' . $e->getTraceAsString());
-            
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur serveur',
-                'error' => env('APP_DEBUG') ? $e->getMessage() : null
-            ], 500);
-        }
-    }
-
-    
     public function getOrCreateRoom(Request $request, $categoryId){
         try {
             $user = $request->user();
@@ -264,7 +114,8 @@ class ChatController extends Controller
                 'room' => $room
             ]);
 
-        } catch (\Exception $e) {
+        } 
+        catch (\Exception $e) {
             Log::error('Erreur création room: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
@@ -276,8 +127,7 @@ class ChatController extends Controller
     /**
      * Get room messages
      */
-    public function getMessages(Request $request, $roomId)
-    {
+    public function getMessages(Request $request, $roomId){
         try {
             $user = $request->user();
             if (!$user) {
@@ -335,8 +185,7 @@ class ChatController extends Controller
     /**
      * Send a message
      */
-    public function sendMessage(Request $request, $roomId)
-    {
+    public function sendMessage(Request $request, $roomId) {
         $validator = Validator::make($request->all(), [
             'message' => 'required|string|max:2000',
             'type' => 'sometimes|string|in:text,image,file'
@@ -419,8 +268,7 @@ class ChatController extends Controller
     /**
      * Get room participants
      */
-    public function getParticipants(Request $request, $roomId)
-    {
+    public function getParticipants(Request $request, $roomId){
         try {
             $user = $request->user();
             if (!$user) {
@@ -480,8 +328,7 @@ class ChatController extends Controller
     /**
      * Get notifications for user
      */
-    public function getNotifications(Request $request)
-    {
+    public function getNotifications(Request $request){
         try {
             $user = $request->user();
             if (!$user) {
@@ -532,8 +379,7 @@ class ChatController extends Controller
     /**
      * Mark notification as read
      */
-    public function markNotificationAsRead(Request $request, $notificationId)
-    {
+    public function markNotificationAsRead(Request $request, $notificationId){
         try {
             $user = $request->user();
             if (!$user) {
@@ -570,8 +416,7 @@ class ChatController extends Controller
     /**
      * Mark all notifications as read
      */
-    public function markAllNotificationsAsRead(Request $request)
-    {
+    public function markAllNotificationsAsRead(Request $request) {
         try {
             $user = $request->user();
             if (!$user) {
@@ -606,8 +451,7 @@ class ChatController extends Controller
     /**
      * Helper: Check if user can access room
      */
-    private function canAccessRoom(User $user, ChatRoom $room): bool
-    {
+    private function canAccessRoom(User $user, ChatRoom $room): bool  {
         // Le promoteur de l'édition a accès à toutes les rooms
         if ($user->type_compte === 'promoteur') {
             $edition = $room->edition ?? Edition::find($room->edition_id);
@@ -625,8 +469,7 @@ class ChatController extends Controller
     /**
      * Helper: Format room data
      */
-    private function formatRoom($room, $user)
-    {
+    private function formatRoom($room, $user) {
         // Calculer les messages non lus
         $unreadCount = 0;
         $participant = $room->participants->where('user_id', $user->id)->first();
@@ -666,8 +509,7 @@ class ChatController extends Controller
     /**
      * Helper: Create notifications for message
      */
-    private function createNotifications(ChatRoom $room, ChatMessage $message, User $sender)
-    {
+    private function createNotifications(ChatRoom $room, ChatMessage $message, User $sender) {
         $participants = ChatParticipant::where('chat_room_id', $room->id)
             ->where('user_id', '!=', $sender->id)
             ->with('user')
@@ -694,8 +536,7 @@ class ChatController extends Controller
     /**
      * Helper: Mark messages as read
      */
-    private function markMessagesAsRead($roomId, $userId)
-    {
+    private function markMessagesAsRead($roomId, $userId)  {
         // Mettre à jour last_seen_at
         ChatParticipant::where('chat_room_id', $roomId)
             ->where('user_id', $userId)
@@ -717,8 +558,7 @@ class ChatController extends Controller
     /**
      * Update last seen for participant
      */
-    public function updateLastSeen(Request $request, $roomId)
-    {
+    public function updateLastSeen(Request $request, $roomId) {
         try {
             $user = $request->user();
             if (!$user) {
@@ -749,4 +589,273 @@ class ChatController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Get user's chat rooms based on their role
+     */
+    public function getUserRooms(Request $request){
+        try {
+            $user = $request->user();
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Utilisateur non authentifié'
+                ], 401);
+            }
+
+            $edition = Edition::where('statut', 'active')->latest()->first();
+
+            if (!$edition) {
+                return response()->json([
+                    'success' => true,
+                    'rooms' => [],
+                    'message' => 'Aucune édition active'
+                ]);
+            }
+
+            // DEBUG: Log pour voir ce qui se passe
+            \Log::info('Récupération rooms pour utilisateur', [
+                'user_id' => $user->id,
+                'type_compte' => $user->type_compte,
+                'edition_id' => $edition->id,
+                'edition_nom' => $edition->nom
+            ]);
+
+            $isPromoteur = $edition->promoteur_id === $user->id;
+            
+            if ($user->type_compte === 'promoteur' && $isPromoteur) {
+                // Initialiser les chats si aucune room n'existe
+                $this->initializeChatsForPromoteur($edition);
+                
+                // Le promoteur voit TOUTES les rooms de l'édition active
+                $rooms = ChatRoom::where('edition_id', $edition->id)
+                    ->where('status', 'active')
+                    ->with([
+                        'category' => function($query) {
+                            $query->select('id', 'nom', 'description');
+                        },
+                        'lastMessage.user' => function($query) {
+                            $query->select('id', 'nom', 'prenoms', 'photo_url');
+                        },
+                        'participants.user' => function($query) {
+                            $query->select('id', 'nom', 'prenoms', 'photo_url', 'type_compte');
+                        }
+                    ])
+                    ->get()
+                    ->map(function($room) use ($user) {
+                        return $this->formatRoom($room, $user);
+                    });
+            } 
+            else {
+                // Pour les candidats, vérifier d'abord s'ils ont des candidatures validées
+                if ($user->type_compte === 'candidat') {
+                    $candidatures = Candidature::where('candidat_id', $user->id)
+                        ->where('edition_id', $edition->id)
+                        ->where('statut', 'validée')
+                        ->pluck('category_id')
+                        ->toArray();
+
+                    \Log::info('Candidatures validées pour l\'utilisateur', [
+                        'user_id' => $user->id,
+                        'candidatures' => $candidatures
+                    ]);
+
+                    // Si pas de candidatures validées, retourner un tableau vide
+                    if (empty($candidatures)) {
+                        return response()->json([
+                            'success' => true,
+                            'rooms' => [],
+                            'message' => 'Aucune candidature validée pour cette édition'
+                        ]);
+                    }
+
+                    $rooms = ChatRoom::where('edition_id', $edition->id)
+                        ->where('status', 'active')
+                        ->whereIn('category_id', $candidatures)
+                        ->with([
+                            'category' => function($query) {
+                                $query->select('id', 'nom', 'description');
+                            },
+                            'lastMessage.user' => function($query) {
+                                $query->select('id', 'nom', 'prenoms', 'photo_url');
+                            },
+                            'participants.user' => function($query) {
+                                $query->select('id', 'nom', 'prenoms', 'photo_url', 'type_compte');
+                            }
+                        ])
+                        ->get()
+                        ->map(function($room) use ($user) {
+                            // S'assurer que l'utilisateur est bien participant
+                            if (!$room->participants->contains('user_id', $user->id)) {
+                                // Ajouter l'utilisateur comme participant s'il ne l'est pas
+                                $room->addParticipant($user->id, $user->type_compte);
+                                // Recharger les participants
+                                $room->load('participants.user');
+                            }
+                            return $this->formatRoom($room, $user);
+                        });
+                } 
+                else {
+                    // Pour les autres types d'utilisateurs
+                    $rooms = ChatRoom::where('edition_id', $edition->id)
+                        ->where('status', 'active')
+                        ->whereHas('participants', function($query) use ($user) {
+                            $query->where('user_id', $user->id);
+                        })
+                        ->with([
+                            'category' => function($query) {
+                                $query->select('id', 'nom', 'description');
+                            },
+                            'lastMessage.user' => function($query) {
+                                $query->select('id', 'nom', 'prenoms', 'photo_url');
+                            },
+                            'participants.user' => function($query) {
+                                $query->select('id', 'nom', 'prenoms', 'photo_url', 'type_compte');
+                            }
+                        ])
+                        ->get()
+                        ->map(function($room) use ($user) {
+                            return $this->formatRoom($room, $user);
+                        });
+                }
+            }
+
+            \Log::info('Rooms retournées', [
+                'count' => count($rooms),
+                'rooms_ids' => $rooms->pluck('id')
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'rooms' => $rooms,
+                'edition' => $edition->nom,
+                'user_type' => $user->type_compte
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Erreur récupération rooms: ' . $e->getMessage());
+            \Log::error('Stack trace: ' . $e->getTraceAsString());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur serveur',
+                'error' => env('APP_DEBUG') ? $e->getMessage() : null
+            ], 500);
+        }
+    }
+
+    // ... [autres méthodes existantes restent inchangées] ...
+
+    /**
+     * Helper: Initialize chat rooms for promoteur if none exist
+     */
+    private function initializeChatsForPromoteur(Edition $edition) {
+        try {
+            // Vérifier si des chats existent déjà pour cette édition
+            $existingRooms = ChatRoom::where('edition_id', $edition->id)->count();
+            
+            if ($existingRooms === 0) {
+                \Log::info('Initialisation des chats pour le promoteur', [
+                    'edition_id' => $edition->id,
+                    'edition_nom' => $edition->nom
+                ]);
+                
+                // Récupérer toutes les catégories de l'édition (ou toutes les catégories si pas de relation directe)
+                $categories = Category::all();
+                
+                if ($categories->isEmpty()) {
+                    \Log::warning('Aucune catégorie trouvée pour initialiser les chats');
+                    return;
+                }
+                
+                DB::beginTransaction();
+                
+                foreach ($categories as $category) {
+                    // Créer la room de chat
+                    $room = ChatRoom::create([
+                        'edition_id' => $edition->id,
+                        'category_id' => $category->id,
+                        'name' => $category->nom,
+                        'description' => $category->description,
+                        'status' => 'active'
+                    ]);
+                    
+                    \Log::info('Chat room créée', [
+                        'room_id' => $room->id,
+                        'category_id' => $category->id,
+                        'category_nom' => $category->nom
+                    ]);
+                    
+                    // Ajouter le promoteur comme participant
+                    ChatParticipant::create([
+                        'chat_room_id' => $room->id,
+                        'user_id' => $edition->promoteur_id,
+                        'role' => 'promoteur',
+                        'last_seen_at' => now()
+                    ]);
+                    
+                    \Log::info('Promoteur ajouté comme participant', [
+                        'room_id' => $room->id,
+                        'promoteur_id' => $edition->promoteur_id
+                    ]);
+                    
+                    // Ajouter un message de bienvenue automatique
+                    $welcomeMessage = ChatMessage::create([
+                        'chat_room_id' => $room->id,
+                        'user_id' => $edition->promoteur_id,
+                        'message' => 'Bienvenue dans le chat de la catégorie ' . $category->nom . ' ! Ce salon est dédié aux échanges concernant cette catégorie.',
+                        'type' => 'text',
+                        'metadata' => ['is_system' => true]
+                    ]);
+                    
+                    \Log::info('Message de bienvenue créé', [
+                        'room_id' => $room->id,
+                        'message_id' => $welcomeMessage->id
+                    ]);
+                }
+                
+                DB::commit();
+                
+                \Log::info('Initialisation des chats terminée avec succès', [
+                    'edition_id' => $edition->id,
+                    'rooms_created' => $categories->count()
+                ]);
+            } else {
+                \Log::info('Des chats existent déjà pour cette édition', [
+                    'edition_id' => $edition->id,
+                    'existing_rooms' => $existingRooms
+                ]);
+                
+                // S'assurer que le promoteur est bien participant à toutes les rooms existantes
+                $roomsWithoutPromoteur = ChatRoom::where('edition_id', $edition->id)
+                    ->whereDoesntHave('participants', function($query) use ($edition) {
+                        $query->where('user_id', $edition->promoteur_id);
+                    })
+                    ->get();
+                
+                if ($roomsWithoutPromoteur->isNotEmpty()) {
+                    \Log::info('Ajout du promoteur aux rooms manquantes', [
+                        'rooms_count' => $roomsWithoutPromoteur->count()
+                    ]);
+                    
+                    foreach ($roomsWithoutPromoteur as $room) {
+                        ChatParticipant::firstOrCreate([
+                            'chat_room_id' => $room->id,
+                            'user_id' => $edition->promoteur_id
+                        ], [
+                            'role' => 'promoteur',
+                            'last_seen_at' => now()
+                        ]);
+                    }
+                }
+            }
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Erreur lors de l\'initialisation des chats pour le promoteur: ' . $e->getMessage());
+            \Log::error('Stack trace: ' . $e->getTraceAsString());
+        }
+    }
+
+    // ... [le reste de votre contrôleur reste inchangé] ...
 }
