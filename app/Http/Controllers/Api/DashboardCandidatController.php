@@ -569,7 +569,8 @@ class DashboardCandidatController extends Controller
                 'date_from' => 'nullable|date',
                 'date_to' => 'nullable|date',
                 'page' => 'nullable|integer|min:1',
-                'per_page' => 'nullable|integer|min:1|max:100'
+                'per_page' => 'nullable|integer|min:1|max:100',
+                'status' => 'nullable|in:all,approved,pending,cancelled,failed'
             ]);
 
             if ($validator->fails()) {
@@ -580,9 +581,8 @@ class DashboardCandidatController extends Controller
                 ], 422);
             }
 
-            // Requête pour les paiements
+            // Requête pour tous les paiements (pas seulement approuvés)
             $paymentsQuery = Payment::where('candidat_id', $user->id)
-                                    ->where('status', 'approved')
                 ->when($request->edition_id, function ($query) use ($request) {
                     $query->where('edition_id', $request->edition_id);
                 })
@@ -592,8 +592,10 @@ class DashboardCandidatController extends Controller
                 ->when($request->search, function ($query) use ($request) {
                     $query->where(function ($q) use ($request) {
                         $q->where('customer_email', 'like', "%{$request->search}%")
-                          ->orWhere('customer_phone', 'like', "%{$request->search}%")
-                          ->orWhere('reference', 'like', "%{$request->search}%");
+                        ->orWhere('customer_phone', 'like', "%{$request->search}%")
+                        ->orWhere('reference', 'like', "%{$request->search}%")
+                        ->orWhere('customer_firstname', 'like', "%{$request->search}%")
+                        ->orWhere('customer_lastname', 'like', "%{$request->search}%");
                     });
                 })
                 ->when($request->date_from, function ($query) use ($request) {
@@ -601,6 +603,13 @@ class DashboardCandidatController extends Controller
                 })
                 ->when($request->date_to, function ($query) use ($request) {
                     $query->whereDate('created_at', '<=', $request->date_to);
+                })
+                ->when($request->status && $request->status !== 'all', function ($query) use ($request) {
+                    if ($request->status === 'approved') {
+                        $query->whereIn('status', ['approved', 'completed', 'paid', 'success']);
+                    } else {
+                        $query->where('status', $request->status);
+                    }
                 })
                 ->with(['edition:id,nom', 'category:id,nom', 'candidat:id,nom,prenoms'])
                 ->orderBy('created_at', 'desc');
@@ -611,16 +620,21 @@ class DashboardCandidatController extends Controller
 
             // Transformer les paiements en format "votes"
             $transformedPayments = $payments->map(function ($payment) {
-                $votesCount = $payment->metadata['votes_count'] ?? 1;
+                $metadata = is_string($payment->metadata) 
+                    ? json_decode($payment->metadata, true) 
+                    : (array) $payment->metadata;
+                
+                $votesCount = $metadata['votes_count'] ?? 1;
+                
                 return [
                     'id' => $payment->id,
                     'reference' => $payment->reference,
-                    'amount' => $payment->amount,
-                    'votes_count' => $votesCount,
+                    'amount' => (float) $payment->amount,
+                    'votes_count' => (int) $votesCount,
                     'status' => $payment->status,
                     'payment_method' => $payment->payment_method,
-                    'created_at' => $payment->created_at,
-                    'updated_at' => $payment->updated_at,
+                    'created_at' => $payment->created_at?->format('Y-m-d H:i:s'),
+                    'updated_at' => $payment->updated_at?->format('Y-m-d H:i:s'),
                     'is_paid' => in_array($payment->status, ['approved', 'completed', 'paid', 'success']),
                     'votant' => [
                         'email' => $payment->customer_email,
@@ -629,10 +643,28 @@ class DashboardCandidatController extends Controller
                         'lastname' => $payment->customer_lastname,
                         'fullname' => trim($payment->customer_firstname . ' ' . $payment->customer_lastname)
                     ],
-                    'edition' => $payment->edition,
-                    'category' => $payment->category,
-                    'candidat' => $payment->candidat,
-                    'metadata' => $payment->metadata
+                    'edition' => $payment->edition ? [
+                        'id' => $payment->edition->id,
+                        'nom' => $payment->edition->nom
+                    ] : null,
+                    'category' => $payment->category ? [
+                        'id' => $payment->category->id,
+                        'nom' => $payment->category->nom
+                    ] : null,
+                    'candidat' => $payment->candidat ? [
+                        'id' => $payment->candidat->id,
+                        'nom' => $payment->candidat->nom,
+                        'prenoms' => $payment->candidat->prenoms
+                    ] : null,
+                    'metadata' => $metadata,
+                    // Compatibilité avec l'ancien format
+                    'email_votant' => $payment->customer_email,
+                    'customer_phone' => $payment->customer_phone,
+                    'edition_name' => $payment->edition->nom ?? null,
+                    'category_name' => $payment->category->nom ?? null,
+                    'payment' => [
+                        'payment_method' => $payment->payment_method
+                    ]
                 ];
             });
 
@@ -654,9 +686,14 @@ class DashboardCandidatController extends Controller
             $allPayments = $statsQuery->get();
             $approvedPayments = $allPayments->whereIn('status', ['approved', 'completed', 'paid', 'success']);
 
-            $totalVotes = $approvedPayments->sum(function ($payment) {
-                return $payment->metadata['votes_count'] ?? 1;
-            });
+            // Calculer le total des votes à partir des paiements approuvés
+            $totalVotes = 0;
+            foreach ($approvedPayments as $payment) {
+                $metadata = is_string($payment->metadata) 
+                    ? json_decode($payment->metadata, true) 
+                    : (array) $payment->metadata;
+                $totalVotes += $metadata['votes_count'] ?? 1;
+            }
 
             $stats = [
                 'total_votes' => $totalVotes,
@@ -667,7 +704,10 @@ class DashboardCandidatController extends Controller
                 'approved_payments' => $approvedPayments->count(),
                 'pending_payments' => $allPayments->where('status', 'pending')->count(),
                 'cancelled_payments' => $allPayments->where('status', 'cancelled')->count(),
-                'failed_payments' => $allPayments->where('status', 'failed')->count()
+                'failed_payments' => $allPayments->where('status', 'failed')->count(),
+                // Nouvelle statistique : montant par vote
+                'amount_per_vote' => 100, // Prix fixe par vote en XOF
+                'votes_today' => $allPayments->where('created_at', '>=', now()->startOfDay())->count()
             ];
 
             return response()->json([
@@ -683,7 +723,7 @@ class DashboardCandidatController extends Controller
                         'to' => $payments->lastItem()
                     ],
                     'stats' => $stats,
-                    'filters' => $request->only(['edition_id', 'category_id', 'search', 'date_from', 'date_to'])
+                    'filters' => $request->only(['edition_id', 'category_id', 'search', 'date_from', 'date_to', 'status'])
                 ]
             ]);
 
