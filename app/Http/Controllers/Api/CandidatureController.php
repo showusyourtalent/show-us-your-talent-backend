@@ -8,11 +8,9 @@ use App\Models\Edition;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
-class CandidatureController extends Controller
-{
+class CandidatureController extends Controller{
     // Récupérer les candidatures de l'utilisateur connecté
-    public function getMesCandidatures()
-    {
+    public function getMesCandidatures(){
         $user = Auth::user();
         
         $candidatures = Candidature::where('candidat_id', $user->id)
@@ -56,8 +54,7 @@ class CandidatureController extends Controller
     }
 
     // Récupérer les statistiques du candidat
-    public function getStatistiques()
-    {
+    public function getStatistiques(){
         $user = Auth::user();
         
         // Candidatures de l'utilisateur

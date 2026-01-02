@@ -482,8 +482,7 @@ public function processPayment(Request $request): JsonResponse
     /**
      * Page de succès (API)
      */
-    public function paymentSuccess($token): JsonResponse
-    {
+    public function paymentSuccess($token): JsonResponse{
         try {
             $payment = Payment::where('payment_token', $token)->firstOrFail();
 

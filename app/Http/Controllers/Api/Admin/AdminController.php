@@ -11,6 +11,7 @@ use Spatie\Permission\Models\Role;
 use App\Models\Edition;
 use App\Models\Candidature;
 use App\Models\Vote;
+use App\Models\Payment;
 use App\Http\Resources\CandidatResource;
 use App\Http\Resources\CategorieResource;
 use App\Models\Category;
@@ -131,8 +132,7 @@ class AdminController extends Controller{
     /**
      * Récupérer les candidats de l'édition active
      */
-    public function getCandidatsEditionActive(Request $request)
-    {
+    public function getCandidatsEditionActive(Request $request){
         try {
             // Trouver l'édition active la plus récente
             $edition = Edition::where('statut', 'active')
@@ -187,7 +187,9 @@ class AdminController extends Controller{
                 ->get();
             
             // Calculer les statistiques
-            $totalVotes = Vote::where('edition_id', $edition->id)->count();
+            $totalVotes = Payment::where('edition_id', $edition->id)
+                                ->where('status', 'approved')
+                                ->count();
             
             // Compter le nombre total de candidats uniques
             $totalCandidats = Candidature::where('edition_id', $edition->id)
@@ -196,9 +198,10 @@ class AdminController extends Controller{
                 ->count('candidat_id');
             
             // Votes d'aujourd'hui
-            $totalVotesToday = Vote::where('edition_id', $edition->id)
-                ->whereDate('created_at', Carbon::today())
-                ->count();
+            $totalVotesToday = Payment::where('edition_id', $edition->id)
+                                    ->where('status', 'approved')
+                                    ->whereDate('created_at', Carbon::today())
+                                    ->count();
             
             // Calcul du temps restant
             $now = Carbon::now();
@@ -219,7 +222,8 @@ class AdminController extends Controller{
                         'message' => 'Fin des votes dans'
                     ];
                 }
-            } elseif ($edition->statut_votes === 'en_attente' && $edition->date_debut_votes) {
+            } 
+            elseif ($edition->statut_votes === 'en_attente' && $edition->date_debut_votes) {
                 $debutVotes = Carbon::parse($edition->date_debut_votes);
                 
                 if ($now->lt($debutVotes)) {
