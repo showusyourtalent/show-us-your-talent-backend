@@ -213,7 +213,7 @@ class AdminController extends Controller{
                     // Récupérer les candidatures liées à ce candidat pour cette édition et catégorie
                     $candidaturesCategorie = Candidature::where('candidat_id', $candidature->candidat_id)
                         ->where('edition_id', $edition->id)
-                        ->where('categorie_id', $categorie->id)
+                        ->where('category_id', $categorie->id)
                         ->where("statut", "validee")
                         ->get();
                     
