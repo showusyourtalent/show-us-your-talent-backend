@@ -161,114 +161,110 @@ class PaymentController extends Controller
     /**
      * Traiter le paiement
      */
-    /**
- * Traiter le paiement
- */
-public function processPayment(Request $request): JsonResponse
-{
-    try {
-        $validator = Validator::make($request->all(), [
-            'payment_token' => 'required|exists:payments,payment_token',
-            'payment_method' => 'required|in:mobile_money,card'
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Token de paiement invalide'
-            ], 422);
-        }
-
-        $payment = Payment::where('payment_token', $request->payment_token)->first();
-        
-        if (!$payment) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Paiement non trouvé'
-            ], 404);
-        }
-
-        // Vérifier les statuts qui permettent de retenter le paiement
-        $allowedStatuses = ['pending', 'processing', 'failed', 'cancelled', 'expired'];
-        
-        if (!in_array($payment->status, $allowedStatuses)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Ce paiement ne peut pas être retenté. Statut: ' . $payment->status
-            ], 400);
-        }
-
-        // Vérifier si le paiement a expiré
-        if ($payment->expires_at && $payment->expires_at->isPast()) {
-            $payment->update(['status' => 'expired']);
-            return response()->json([
-                'success' => false,
-                'message' => 'Le paiement a expiré'
-            ], 400);
-        }
-
-        $edition = Edition::find($payment->edition_id);
-        if (!$edition || !$edition->isVoteOpen()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Les votes ne sont plus ouverts pour cette édition'
-            ], 400);
-        }
-
-        // Si le paiement était annulé ou échoué, le réinitialiser
-        if (in_array($payment->status, ['cancelled', 'failed', 'expired'])) {
-            // Conserver certaines métadonnées importantes
-            $metadata = $payment->metadata ?? [];
-            $importantMetadata = [
-                'votes_count' => $metadata['votes_count'] ?? 1,
-                'vote_price' => $metadata['vote_price'] ?? $this->votePrice,
-                'candidat_name' => $metadata['candidat_name'] ?? '',
-                'edition_name' => $metadata['edition_name'] ?? '',
-                'category_name' => $metadata['category_name'] ?? '',
-                'ip_address' => $metadata['ip_address'] ?? null,
-                'user_agent' => $metadata['user_agent'] ?? null,
-                'created_at' => $metadata['created_at'] ?? Carbon::now()->toISOString(),
-                'previous_status' => $payment->status,
-                'retry_count' => ($metadata['retry_count'] ?? 0) + 1,
-                'retry_at' => Carbon::now()->toISOString()
-            ];
-            
-            $payment->update([
-                'status' => 'pending',
-                'transaction_id' => null,
-                'payment_method' => null,
-                'metadata' => $importantMetadata,
-                'expires_at' => Carbon::now()->addMinutes(30)
+    
+    public function processPayment(Request $request): JsonResponse{
+        try {
+            $validator = Validator::make($request->all(), [
+                'payment_token' => 'required|exists:payments,payment_token',
+                'payment_method' => 'required|in:mobile_money,card'
             ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Token de paiement invalide'
+                ], 422);
+            }
+
+            $payment = Payment::where('payment_token', $request->payment_token)->first();
             
-            Log::info('Paiement réinitialisé pour nouvelle tentative', [
-                'payment_id' => $payment->id,
-                'previous_status' => $payment->status,
-                'retry_count' => $importantMetadata['retry_count']
+            if (!$payment) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Paiement non trouvé'
+                ], 404);
+            }
+
+            // Vérifier les statuts qui permettent de retenter le paiement
+            $allowedStatuses = ['pending', 'processing', 'failed', 'cancelled', 'expired'];
+            
+            if (!in_array($payment->status, $allowedStatuses)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ce paiement ne peut pas être retenté. Statut: ' . $payment->status
+                ], 400);
+            }
+
+            // Vérifier si le paiement a expiré
+            if ($payment->expires_at && $payment->expires_at->isPast()) {
+                $payment->update(['status' => 'expired']);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Le paiement a expiré'
+                ], 400);
+            }
+
+            $edition = Edition::find($payment->edition_id);
+            if (!$edition || !$edition->isVoteOpen()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Les votes ne sont plus ouverts pour cette édition'
+                ], 400);
+            }
+
+            // Si le paiement était annulé ou échoué, le réinitialiser
+            if (in_array($payment->status, ['cancelled', 'failed', 'expired'])) {
+                // Conserver certaines métadonnées importantes
+                $metadata = $payment->metadata ?? [];
+                $importantMetadata = [
+                    'votes_count' => $metadata['votes_count'] ?? 1,
+                    'vote_price' => $metadata['vote_price'] ?? $this->votePrice,
+                    'candidat_name' => $metadata['candidat_name'] ?? '',
+                    'edition_name' => $metadata['edition_name'] ?? '',
+                    'category_name' => $metadata['category_name'] ?? '',
+                    'ip_address' => $metadata['ip_address'] ?? null,
+                    'user_agent' => $metadata['user_agent'] ?? null,
+                    'created_at' => $metadata['created_at'] ?? Carbon::now()->toISOString(),
+                    'previous_status' => $payment->status,
+                    'retry_count' => ($metadata['retry_count'] ?? 0) + 1,
+                    'retry_at' => Carbon::now()->toISOString()
+                ];
+                
+                $payment->update([
+                    'status' => 'pending',
+                    'transaction_id' => null,
+                    'payment_method' => null,
+                    'metadata' => $importantMetadata,
+                    'expires_at' => Carbon::now()->addMinutes(30)
+                ]);
+                
+                Log::info('Paiement réinitialisé pour nouvelle tentative', [
+                    'payment_id' => $payment->id,
+                    'previous_status' => $payment->status,
+                    'retry_count' => $importantMetadata['retry_count']
+                ]);
+            }
+
+            return $this->processFedaPayPayment($payment, $request->payment_method);
+
+        } catch (\Exception $e) {
+            Log::error('Erreur traitement paiement', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'request' => $request->all()
             ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors du traitement du paiement: ' . $e->getMessage()
+            ], 500);
         }
-
-        return $this->processFedaPayPayment($payment, $request->payment_method);
-
-    } catch (\Exception $e) {
-        Log::error('Erreur traitement paiement', [
-            'error' => $e->getMessage(),
-            'trace' => $e->getTraceAsString(),
-            'request' => $request->all()
-        ]);
-
-        return response()->json([
-            'success' => false,
-            'message' => 'Erreur lors du traitement du paiement: ' . $e->getMessage()
-        ], 500);
     }
-}
 
     /**
      * Traiter un paiement FedaPay
      */
-    private function processFedaPayPayment(Payment $payment, string $paymentMethod): JsonResponse
-    {
+    private function processFedaPayPayment(Payment $payment, string $paymentMethod): JsonResponse {
         try {
             $apiKey = config('services.fedapay.secret_key');
             $environment = config('services.fedapay.environment', 'live');
@@ -412,8 +408,7 @@ public function processPayment(Request $request): JsonResponse
     /**
      * Vérifier le statut du paiement
      */
-    public function checkPaymentStatus($token): JsonResponse
-    {
+    public function checkPaymentStatus($token): JsonResponse{
         try {
             $payment = Payment::where('payment_token', $token)->firstOrFail();
             
