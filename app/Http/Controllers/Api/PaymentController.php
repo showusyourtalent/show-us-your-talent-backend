@@ -835,38 +835,45 @@ class PaymentController extends Controller
     /**
      * Générer une page HTML qui ferme automatiquement la fenêtre
      */
-    private function generateAutoClosePage(?Payment $payment, string $type, string $message = ''): \Illuminate\Http\Response
-    {
+    private function generateAutoClosePage(?Payment $payment, string $type, string $message = ''): \Illuminate\Http\Response{
         $config = [
             'success' => [
                 'title' => 'Paiement Réussi',
                 'message' => $message ?: 'Merci pour votre vote !',
-                'icon' => '',
-                'color' => '#4CAF50',
+                'icon' => '✓',
+                'color' => '#10B981',
+                'iconColor' => '#10B981',
+                'gradient' => 'linear-gradient(135deg, #10B981, #059669)',
                 'redirectUrl' => config('app.frontend_url') . '/payment/success',
                 'closeDelay' => 1500
             ],
             'cancelled' => [
                 'title' => 'Paiement Annulé',
                 'message' => $message ?: 'Vous avez annulé le paiement.',
-                'icon' => '',
-                'color' => '#FF9800',
+                'icon' => '↶',
+                'color' => '#F59E0B',
+                'iconColor' => '#F59E0B',
+                'gradient' => 'linear-gradient(135deg, #F59E0B, #D97706)',
                 'redirectUrl' => config('app.frontend_url') . '/payment/failed',
                 'closeDelay' => 2000
             ],
             'failed' => [
                 'title' => 'Paiement Échoué',
                 'message' => $message ?: 'Le paiement a échoué.',
-                'icon' => '',
-                'color' => '#F44336',
+                'icon' => '✗',
+                'color' => '#EF4444',
+                'iconColor' => '#EF4444',
+                'gradient' => 'linear-gradient(135deg, #EF4444, #DC2626)',
                 'redirectUrl' => config('app.frontend_url') . '/payment/failed',
                 'closeDelay' => 2500
             ],
             'error' => [
                 'title' => 'Erreur',
                 'message' => $message ?: 'Une erreur est survenue.',
-                'icon' => '',
-                'color' => '#9E9E9E',
+                'icon' => '⚠',
+                'color' => '#6B7280',
+                'iconColor' => '#6B7280',
+                'gradient' => 'linear-gradient(135deg, #6B7280, #4B5563)',
                 'redirectUrl' => config('app.frontend_url'),
                 'closeDelay' => 3000
             ]
@@ -893,11 +900,26 @@ class PaymentController extends Controller
             $votes = $payment->metadata['votes_count'] ?? 1;
 
             $paymentDetailsHtml = '
-            <div class="payment-details">
-                <p><strong>Référence :</strong> ' . htmlspecialchars($payment->reference, ENT_QUOTES, 'UTF-8') . '</p>
-                <p><strong>Montant :</strong> ' . number_format($payment->amount, 0, ',', ' ') . ' XOF</p>
-                <p><strong>Candidat :</strong> ' . htmlspecialchars($payment->metadata['candidat_name'] ?? '', ENT_QUOTES, 'UTF-8') . '</p>
-                <p><strong>Votes :</strong> ' . $votes . ' vote' . ($votes > 1 ? 's' : '') . '</p>
+            <div class="payment-details animate-slide-up">
+                <h3 class="payment-details-title">Détails du paiement</h3>
+                <div class="payment-details-grid">
+                    <div class="detail-item">
+                        <span class="detail-label">Référence</span>
+                        <span class="detail-value">' . htmlspecialchars($payment->reference, ENT_QUOTES, 'UTF-8') . '</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Montant</span>
+                        <span class="detail-value">' . number_format($payment->amount, 0, ',', ' ') . ' XOF</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Candidat</span>
+                        <span class="detail-value">' . htmlspecialchars($payment->metadata['candidat_name'] ?? '', ENT_QUOTES, 'UTF-8') . '</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Votes</span>
+                        <span class="detail-value">' . $votes . ' vote' . ($votes > 1 ? 's' : '') . '</span>
+                    </div>
+                </div>
             </div>';
         }
 
@@ -909,6 +931,8 @@ class PaymentController extends Controller
         $titleEscaped  = htmlspecialchars($settings['title'], ENT_QUOTES, 'UTF-8');
         $messageEscaped= htmlspecialchars($settings['message'], ENT_QUOTES, 'UTF-8');
         $iconEscaped   = htmlspecialchars($settings['icon'], ENT_QUOTES, 'UTF-8');
+        $iconColor     = htmlspecialchars($settings['iconColor'], ENT_QUOTES, 'UTF-8');
+        $gradient      = htmlspecialchars($settings['gradient'], ENT_QUOTES, 'UTF-8');
         $redirectUrl   = htmlspecialchars($settings['redirectUrl'], ENT_QUOTES, 'UTF-8');
         $closeDelay    = (int) $settings['closeDelay'];
 
@@ -919,108 +943,401 @@ class PaymentController extends Controller
     <!DOCTYPE html>
     <html lang="fr">
     <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{$titleEscaped} - FedaPay</title>
-    <style>
-    body{
-        font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto;
-        background:linear-gradient(135deg,#667eea,#764ba2);
-        height:100vh;
-        display:flex;
-        justify-content:center;
-        align-items:center;
-        color:#fff;
-    }
-    .container{
-        background:rgba(255,255,255,.1);
-        padding:40px;
-        border-radius:20px;
-        max-width:500px;
-        width:100%;
-        text-align:center;
-        backdrop-filter:blur(10px);
-    }
-    .icon{font-size:80px;margin-bottom:20px}
-    .countdown{font-size:48px;font-weight:bold}
-    .button{
-        background:#fff;
-        color:#667eea;
-        border:none;
-        padding:12px 30px;
-        border-radius:50px;
-        cursor:pointer;
-        font-weight:bold;
-    }
-    .payment-details{
-        margin:20px 0;
-        background:rgba(255,255,255,.1);
-        padding:15px;
-        border-radius:10px;
-        text-align:left;
-    }
-    </style>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{$titleEscaped} - FedaPay</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: {$gradient};
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 48px 40px;
+            max-width: 540px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            animation: fadeIn 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        
+        .icon-container {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 32px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            animation: iconBounce 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        
+        .icon-container::after {
+            content: '';
+            position: absolute;
+            width: 140px;
+            height: 140px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            animation: pulse 2s infinite;
+        }
+        
+        .icon {
+            font-size: 56px;
+            font-weight: bold;
+            color: {$iconColor};
+        }
+        
+        h1 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            color: white;
+            line-height: 1.2;
+        }
+        
+        .message {
+            font-size: 18px;
+            line-height: 1.6;
+            margin-bottom: 32px;
+            color: rgba(255, 255, 255, 0.9);
+            font-weight: 400;
+        }
+        
+        .payment-details {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+            margin: 32px 0;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            animation: slideUp 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        
+        .payment-details-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: white;
+            text-align: left;
+        }
+        
+        .payment-details-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+        
+        .detail-item {
+            text-align: left;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .detail-item:last-child {
+            border-bottom: none;
+        }
+        
+        .detail-label {
+            display: block;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.7);
+            margin-bottom: 4px;
+            font-weight: 500;
+        }
+        
+        .detail-value {
+            display: block;
+            font-size: 16px;
+            font-weight: 600;
+            color: white;
+        }
+        
+        .countdown-container {
+            margin: 32px 0;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            animation: fadeIn 1s ease-out;
+        }
+        
+        .countdown {
+            font-size: 64px;
+            font-weight: 800;
+            color: white;
+            margin-bottom: 8px;
+            font-feature-settings: "tnum";
+            font-variant-numeric: tabular-nums;
+        }
+        
+        .loading-text {
+            font-size: 16px;
+            color: rgba(255, 255, 255, 0.8);
+            margin-bottom: 32px;
+            font-weight: 500;
+        }
+        
+        .close-button {
+            background: white;
+            color: {$iconColor};
+            border: none;
+            padding: 18px 40px;
+            border-radius: 50px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            animation: fadeIn 1.2s ease-out;
+        }
+        
+        .close-button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.25);
+        }
+        
+        .close-button:active {
+            transform: translateY(-1px);
+        }
+        
+        .close-button i {
+            font-size: 20px;
+        }
+        
+        .footer-note {
+            margin-top: 32px;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.6);
+            font-weight: 500;
+        }
+        
+        /* Animations */
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(40px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes iconBounce {
+            0%, 100% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.1);
+            }
+        }
+        
+        @keyframes pulse {
+            0% {
+                transform: scale(0.95);
+                opacity: 0.5;
+            }
+            70% {
+                transform: scale(1.1);
+                opacity: 0;
+            }
+            100% {
+                transform: scale(1.1);
+                opacity: 0;
+            }
+        }
+        
+        /* Responsive */
+        @media (max-width: 600px) {
+            .container {
+                padding: 32px 24px;
+                margin: 10px;
+            }
+            
+            h1 {
+                font-size: 28px;
+            }
+            
+            .message {
+                font-size: 16px;
+            }
+            
+            .payment-details-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .countdown {
+                font-size: 56px;
+            }
+            
+            .close-button {
+                width: 100%;
+                padding: 16px 32px;
+            }
+        }
+        </style>
     </head>
     <body>
 
     <div class="container">
-        <div class="icon">{$iconEscaped}</div>
+        <div class="icon-container">
+            <div class="icon">{$iconEscaped}</div>
+        </div>
+        
         <h1>{$titleEscaped}</h1>
-        <p>{$messageEscaped}</p>
-
+        <p class="message">{$messageEscaped}</p>
+        
         {$paymentDetailsHtml}
-
-        <div class="countdown" id="countdown">3</div>
-        <p id="loadingText">Fermeture automatique…</p>
-
-        <button class="button" onclick="closeWindow()">Fermer</button>
+        
+        <div class="countdown-container">
+            <div class="countdown" id="countdown">3</div>
+            <p class="loading-text" id="loadingText">Fermeture automatique dans <span id="secondsText">3</span> seconde(s)</p>
+        </div>
+        
+        <button class="close-button" onclick="closeWindow()" id="closeButton">
+            <i class="fas fa-times"></i>
+            Fermer maintenant
+        </button>
+        
+        <p class="footer-note">Vous serez redirigé automatiquement...</p>
     </div>
 
     <script>
-    const paymentData = {$jsonData};
-    const type = "{$typeEscaped}";
-    const redirectUrl = "{$redirectUrl}";
-    let seconds = 3;
-    let closing = false;
+        const paymentData = {$jsonData};
+        const type = "{$typeEscaped}";
+        const redirectUrl = "{$redirectUrl}";
+        const totalSeconds = Math.floor({$closeDelay} / 1000);
+        let seconds = totalSeconds;
+        let closing = false;
+        let autoCloseTimer;
+        let countdownInterval;
 
-    function sendMessage(){
-        try{
-            if(window.opener && !window.opener.closed){
-                window.opener.postMessage({
-                    type:'PAYMENT_RESULT',
-                    result:type,
-                    paymentData
-                },'*');
+        function updateCountdown() {
+            const countdownEl = document.getElementById('countdown');
+            const secondsTextEl = document.getElementById('secondsText');
+            
+            if (seconds >= 0) {
+                countdownEl.textContent = seconds;
+                secondsTextEl.textContent = seconds;
+                seconds--;
             }
-        }catch(e){}
-    }
-
-    function closeWindow(){
-        if(closing) return;
-        closing = true;
-        sendMessage();
-        try{
-            window.close();
-            setTimeout(()=>location.href = redirectUrl, 800);
-        }catch(e){
-            location.href = redirectUrl;
         }
-    }
 
-    const countdownEl = document.getElementById('countdown');
-    const loadingText = document.getElementById('loadingText');
-
-    const interval = setInterval(()=>{
-        seconds--;
-        countdownEl.textContent = seconds;
-        if(seconds <= 0){
-            clearInterval(interval);
-            loadingText.textContent = 'Fermeture…';
-            closeWindow();
+        function sendMessage() {
+            try {
+                if (window.opener && !window.opener.closed) {
+                    window.opener.postMessage({
+                        type: 'PAYMENT_RESULT',
+                        result: type,
+                        paymentData: paymentData
+                    }, '*');
+                }
+            } catch (e) {
+                console.log('Message sending failed:', e);
+            }
         }
-    },1000);
 
-    setTimeout(closeWindow, {$closeDelay});
+        function closeWindow() {
+            if (closing) return;
+            
+            closing = true;
+            
+            // Clear timers
+            if (autoCloseTimer) clearTimeout(autoCloseTimer);
+            if (countdownInterval) clearInterval(countdownInterval);
+            
+            // Update UI
+            document.getElementById('countdown').textContent = '0';
+            document.getElementById('loadingText').textContent = 'Fermeture en cours...';
+            document.getElementById('closeButton').disabled = true;
+            document.getElementById('closeButton').innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fermeture...';
+            
+            // Send message to opener
+            sendMessage();
+            
+            // Try to close window or redirect
+            setTimeout(() => {
+                try {
+                    // Try to close the window
+                    if (window.history.length > 1) {
+                        window.history.back();
+                    }
+                    
+                    // Fallback: redirect
+                    setTimeout(() => {
+                        window.location.href = redirectUrl;
+                    }, 300);
+                    
+                    // Last resort: try window.close()
+                    setTimeout(() => {
+                        try {
+                            window.close();
+                        } catch (e) {
+                            // If window.close() fails, just redirect
+                            window.location.href = redirectUrl;
+                        }
+                    }, 500);
+                    
+                } catch (e) {
+                    // If anything fails, just redirect
+                    window.location.href = redirectUrl;
+                }
+            }, 800);
+        }
+
+        // Initialize countdown
+        document.addEventListener('DOMContentLoaded', function() {
+            // Start countdown interval
+            countdownInterval = setInterval(updateCountdown, 1000);
+            
+            // Set auto close timer
+            autoCloseTimer = setTimeout(closeWindow, {$closeDelay});
+            
+            // Update immediately
+            updateCountdown();
+        });
+
+        // Handle beforeunload
+        window.addEventListener('beforeunload', function() {
+            sendMessage();
+        });
     </script>
 
     </body>
