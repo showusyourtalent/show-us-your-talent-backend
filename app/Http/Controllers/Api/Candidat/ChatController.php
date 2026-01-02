@@ -760,13 +760,28 @@ class ChatController extends Controller{
                     'edition_nom' => $edition->nom
                 ]);
                 
-                // Récupérer toutes les catégories de l'édition (ou toutes les catégories si pas de relation directe)
+                // Récupérer toutes les catégories
                 $categories = Category::all();
                 
                 if ($categories->isEmpty()) {
                     \Log::warning('Aucune catégorie trouvée pour initialiser les chats');
                     return;
                 }
+                
+                // Récupérer toutes les candidatures validées pour cette édition
+                $candidatures = Candidature::where('edition_id', $edition->id)
+                    ->where('statut', 'validée')
+                    ->with(['candidat', 'category'])
+                    ->get()
+                    ->groupBy('category_id');
+                
+                \Log::info('Candidatures validées trouvées', [
+                    'edition_id' => $edition->id,
+                    'total_candidatures' => $candidatures->flatten()->count(),
+                    'candidatures_par_categorie' => $candidatures->map(function($item) {
+                        return $item->count();
+                    })
+                ]);
                 
                 DB::beginTransaction();
                 
@@ -786,7 +801,7 @@ class ChatController extends Controller{
                         'category_nom' => $category->nom
                     ]);
                     
-                    // Ajouter le promoteur comme participant
+                    // 1. Ajouter le promoteur comme participant
                     ChatParticipant::create([
                         'chat_room_id' => $room->id,
                         'user_id' => $edition->promoteur_id,
@@ -799,18 +814,52 @@ class ChatController extends Controller{
                         'promoteur_id' => $edition->promoteur_id
                     ]);
                     
-                    // Ajouter un message de bienvenue automatique
+                    // 2. Ajouter les candidats de cette catégorie comme participants
+                    $candidaturesCategory = $candidatures->get($category->id, collect());
+                    
+                    if ($candidaturesCategory->isNotEmpty()) {
+                        $candidatIds = $candidaturesCategory->pluck('candidat_id')->unique();
+                        $candidatsAdded = 0;
+                        
+                        foreach ($candidatIds as $candidatId) {
+                            // Vérifier que le candidat existe et n'est pas déjà ajouté
+                            $candidat = User::find($candidatId);
+                            if ($candidat && $candidat->type_compte === 'candidat') {
+                                ChatParticipant::create([
+                                    'chat_room_id' => $room->id,
+                                    'user_id' => $candidatId,
+                                    'role' => 'candidat',
+                                    'last_seen_at' => null // Pas encore vu
+                                ]);
+                                $candidatsAdded++;
+                            }
+                        }
+                        
+                        \Log::info('Candidats ajoutés comme participants', [
+                            'room_id' => $room->id,
+                            'category_id' => $category->id,
+                            'candidats_ajoutes' => $candidatsAdded
+                        ]);
+                    } else {
+                        \Log::info('Aucun candidat validé pour cette catégorie', [
+                            'room_id' => $room->id,
+                            'category_id' => $category->id
+                        ]);
+                    }
+                    
+                    // 3. Ajouter un message de bienvenue automatique
                     $welcomeMessage = ChatMessage::create([
                         'chat_room_id' => $room->id,
                         'user_id' => $edition->promoteur_id,
-                        'message' => 'Bienvenue dans le chat de la catégorie ' . $category->nom . ' ! Ce salon est dédié aux échanges concernant cette catégorie.',
+                        'message' => 'Bienvenue dans le chat de la catégorie "' . $category->nom . '" ! Ce salon est dédié aux échanges concernant cette catégorie.',
                         'type' => 'text',
                         'metadata' => ['is_system' => true]
                     ]);
                     
                     \Log::info('Message de bienvenue créé', [
                         'room_id' => $room->id,
-                        'message_id' => $welcomeMessage->id
+                        'message_id' => $welcomeMessage->id,
+                        'candidats_total' => $candidaturesCategory->count()
                     ]);
                 }
                 
@@ -818,7 +867,8 @@ class ChatController extends Controller{
                 
                 \Log::info('Initialisation des chats terminée avec succès', [
                     'edition_id' => $edition->id,
-                    'rooms_created' => $categories->count()
+                    'rooms_created' => $categories->count(),
+                    'total_candidatures' => $candidatures->flatten()->count()
                 ]);
             } else {
                 \Log::info('Des chats existent déjà pour cette édition', [
@@ -826,28 +876,73 @@ class ChatController extends Controller{
                     'existing_rooms' => $existingRooms
                 ]);
                 
-                // S'assurer que le promoteur est bien participant à toutes les rooms existantes
-                $roomsWithoutPromoteur = ChatRoom::where('edition_id', $edition->id)
-                    ->whereDoesntHave('participants', function($query) use ($edition) {
-                        $query->where('user_id', $edition->promoteur_id);
-                    })
-                    ->get();
+                // Récupérer toutes les candidatures validées pour cette édition
+                $candidatures = Candidature::where('edition_id', $edition->id)
+                    ->where('statut', 'validée')
+                    ->get()
+                    ->groupBy('category_id');
                 
-                if ($roomsWithoutPromoteur->isNotEmpty()) {
-                    \Log::info('Ajout du promoteur aux rooms manquantes', [
-                        'rooms_count' => $roomsWithoutPromoteur->count()
+                DB::beginTransaction();
+                
+                // Pour chaque room existante, s'assurer que tous les participants nécessaires y sont
+                $existingRooms = ChatRoom::where('edition_id', $edition->id)->get();
+                
+                foreach ($existingRooms as $room) {
+                    // 1. S'assurer que le promoteur est bien participant
+                    $promoteurParticipant = ChatParticipant::firstOrCreate([
+                        'chat_room_id' => $room->id,
+                        'user_id' => $edition->promoteur_id
+                    ], [
+                        'role' => 'promoteur',
+                        'last_seen_at' => now()
                     ]);
                     
-                    foreach ($roomsWithoutPromoteur as $room) {
-                        ChatParticipant::firstOrCreate([
-                            'chat_room_id' => $room->id,
-                            'user_id' => $edition->promoteur_id
-                        ], [
-                            'role' => 'promoteur',
-                            'last_seen_at' => now()
-                        ]);
+                    // 2. S'assurer que les candidats validés de cette catégorie sont participants
+                    $candidaturesCategory = $candidatures->get($room->category_id, collect());
+                    
+                    if ($candidaturesCategory->isNotEmpty()) {
+                        $candidatIds = $candidaturesCategory->pluck('candidat_id')->unique();
+                        $candidatsAdded = 0;
+                        $candidatsExistants = 0;
+                        
+                        foreach ($candidatIds as $candidatId) {
+                            // Vérifier si le candidat existe et n'est pas déjà participant
+                            $candidat = User::find($candidatId);
+                            if ($candidat && $candidat->type_compte === 'candidat') {
+                                $participant = ChatParticipant::firstOrCreate([
+                                    'chat_room_id' => $room->id,
+                                    'user_id' => $candidatId
+                                ], [
+                                    'role' => 'candidat',
+                                    'last_seen_at' => null
+                                ]);
+                                
+                                if ($participant->wasRecentlyCreated) {
+                                    $candidatsAdded++;
+                                } else {
+                                    $candidatsExistants++;
+                                }
+                            }
+                        }
+                        
+                        if ($candidatsAdded > 0) {
+                            \Log::info('Candidats ajoutés à la room existante', [
+                                'room_id' => $room->id,
+                                'category_id' => $room->category_id,
+                                'candidats_ajoutes' => $candidatsAdded,
+                                'candidats_existants' => $candidatsExistants
+                            ]);
+                        }
                     }
                 }
+                
+                DB::commit();
+                
+                \Log::info('Mise à jour des participants terminée', [
+                    'edition_id' => $edition->id,
+                    'rooms_traitees' => $existingRooms->count(),
+                    'total_candidatures' => $candidatures->flatten()->count()
+                ]);
             }
             
         } catch (\Exception $e) {
