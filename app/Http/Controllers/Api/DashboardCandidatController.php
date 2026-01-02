@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Candidature;
-use App\Models\Vote;
 use App\Models\Payment;
 use App\Models\Edition;
 use App\Models\Category;
@@ -57,13 +56,36 @@ class DashboardCandidatController extends Controller
                 return in_array($c->statut, ['validee', 'preselectionne', 'finaliste', 'gagnant']);
             })->values();
 
-            // Derniers votes reçus
-            $lastVotes = Vote::where('candidat_id', $user->id)
-                ->where('is_paid', true)
-                ->with(['edition', 'category'])
+            // Derniers paiements (votes) reçus
+            $lastPayments = Payment::where('candidat_id', $user->id)
+                ->whereIn('status', ['approved', 'completed', 'paid', 'success'])
+                ->with(['edition', 'category', 'candidat'])
                 ->orderBy('created_at', 'desc')
                 ->limit(10)
-                ->get();
+                ->get()
+                ->map(function ($payment) {
+                    $votesCount = $payment->metadata['votes_count'] ?? 1;
+                    return [
+                        'id' => $payment->id,
+                        'reference' => $payment->reference,
+                        'amount' => $payment->amount,
+                        'votes_count' => $votesCount,
+                        'created_at' => $payment->created_at,
+                        'payment_method' => $payment->payment_method,
+                        'status' => $payment->status,
+                        'votant' => [
+                            'email' => $payment->customer_email,
+                            'phone' => $payment->customer_phone,
+                            'firstname' => $payment->customer_firstname,
+                            'lastname' => $payment->customer_lastname,
+                            'fullname' => trim($payment->customer_firstname . ' ' . $payment->customer_lastname)
+                        ],
+                        'edition' => $payment->edition,
+                        'category' => $payment->category,
+                        'candidat' => $payment->candidat,
+                        'is_paid' => in_array($payment->status, ['approved', 'completed', 'paid', 'success'])
+                    ];
+                });
 
             // Classement actuel (si candidature active)
             $ranking = null;
@@ -77,7 +99,7 @@ class DashboardCandidatController extends Controller
                 'data' => [
                     'global_stats' => $stats,
                     'candidatures' => $activeCandidatures,
-                    'last_votes' => $lastVotes,
+                    'last_votes' => $lastPayments,
                     'ranking' => $ranking,
                     'candidat' => [
                         'id' => $user->id,
@@ -109,24 +131,33 @@ class DashboardCandidatController extends Controller
      */
     private function calculateGlobalStats(int $candidatId, $candidatures): array
     {
-        $totalVotes = Vote::where('candidat_id', $candidatId)
-            ->where('is_paid', true)
-            ->count();
+        // Paiements approuvés
+        $approvedPayments = Payment::where('candidat_id', $candidatId)
+            ->whereIn('status', ['approved', 'completed', 'paid', 'success']);
 
-        $totalAmount = Vote::where('candidat_id', $candidatId)
-            ->where('is_paid', true)
-            ->sum('montant');
+        $allPayments = Payment::where('candidat_id', $candidatId)->get();
 
-        $todayVotes = Vote::where('candidat_id', $candidatId)
-            ->where('is_paid', true)
+        // Calculer le total des votes à partir des paiements approuvés
+        $totalVotes = $approvedPayments->get()->sum(function ($payment) {
+            return $payment->metadata['votes_count'] ?? 1;
+        });
+
+        $totalAmount = $approvedPayments->sum('amount');
+
+        $todayVotes = $approvedPayments->clone()
             ->whereDate('created_at', Carbon::today())
-            ->count();
+            ->get()
+            ->sum(function ($payment) {
+                return $payment->metadata['votes_count'] ?? 1;
+            });
 
-        $monthVotes = Vote::where('candidat_id', $candidatId)
-            ->where('is_paid', true)
+        $monthVotes = $approvedPayments->clone()
             ->whereMonth('created_at', Carbon::now()->month)
             ->whereYear('created_at', Carbon::now()->year)
-            ->count();
+            ->get()
+            ->sum(function ($payment) {
+                return $payment->metadata['votes_count'] ?? 1;
+            });
 
         $activeCandidatures = $candidatures->filter(function ($c) {
             return in_array($c->statut, ['validee', 'preselectionne', 'finaliste', 'gagnant']);
@@ -134,10 +165,11 @@ class DashboardCandidatController extends Controller
 
         $totalCandidatures = $candidatures->count();
 
-        $uniqueVoters = Vote::where('candidat_id', $candidatId)
-            ->where('is_paid', true)
-            ->distinct('email_votant')
-            ->count('email_votant');
+        // Nombre de votants uniques (basé sur email)
+        $uniqueVoters = Payment::where('candidat_id', $candidatId)
+            ->whereIn('status', ['approved', 'completed', 'paid', 'success'])
+            ->distinct('customer_email')
+            ->count('customer_email');
 
         // Classement moyen
         $averageRanking = $this->calculateAverageRanking($candidatId, $candidatures);
@@ -151,7 +183,12 @@ class DashboardCandidatController extends Controller
             'total_candidatures' => $totalCandidatures,
             'unique_voters' => $uniqueVoters,
             'average_ranking' => $averageRanking,
-            'vote_avg' => $totalVotes > 0 ? round($totalAmount / $totalVotes, 2) : 0
+            'vote_avg' => $totalVotes > 0 ? round($totalAmount / $totalVotes, 2) : 0,
+            'total_payments' => $allPayments->count(),
+            'approved_payments' => $approvedPayments->count(),
+            'pending_payments' => $allPayments->where('status', 'pending')->count(),
+            'cancelled_payments' => $allPayments->where('status', 'cancelled')->count(),
+            'failed_payments' => $allPayments->where('status', 'failed')->count()
         ];
     }
 
@@ -255,58 +292,92 @@ class DashboardCandidatController extends Controller
      */
     private function getCandidatStats(int $candidatId, int $editionId, ?int $categoryId = null): array
     {
-        // Requête de base pour les votes
-        $voteQuery = Vote::where('candidat_id', $candidatId)
+        // Requête de base pour les paiements approuvés
+        $paymentQuery = Payment::where('candidat_id', $candidatId)
             ->where('edition_id', $editionId)
-            ->where('is_paid', true);
+            ->whereIn('status', ['approved', 'completed', 'paid', 'success']);
         
         if ($categoryId) {
-            $voteQuery->where('categorie_id', $categoryId);
+            $paymentQuery->where('category_id', $categoryId);
         }
 
-        $totalVotes = $voteQuery->count();
-        $totalAmount = $voteQuery->sum('montant');
+        $payments = $paymentQuery->get();
+
+        // Calculer le total des votes et montants
+        $totalVotes = $payments->sum(function ($payment) {
+            return $payment->metadata['votes_count'] ?? 1;
+        });
+
+        $totalAmount = $payments->sum('amount');
         
         // Votes aujourd'hui
-        $todayVotes = $voteQuery->clone()->whereDate('created_at', Carbon::today())->count();
+        $todayPayments = $payments->where('created_at', '>=', Carbon::today());
+        $todayVotes = $todayPayments->sum(function ($payment) {
+            return $payment->metadata['votes_count'] ?? 1;
+        });
         
         // Votes cette semaine
-        $weekVotes = $voteQuery->clone()
-            ->whereBetween('created_at', [
-                Carbon::now()->startOfWeek(),
-                Carbon::now()->endOfWeek()
-            ])
-            ->count();
+        $weekStart = Carbon::now()->startOfWeek();
+        $weekEnd = Carbon::now()->endOfWeek();
+        $weekPayments = $payments->whereBetween('created_at', [$weekStart, $weekEnd]);
+        $weekVotes = $weekPayments->sum(function ($payment) {
+            return $payment->metadata['votes_count'] ?? 1;
+        });
         
         // Votes ce mois
-        $monthVotes = $voteQuery->clone()
-            ->whereBetween('created_at', [
-                Carbon::now()->startOfMonth(),
-                Carbon::now()->endOfMonth()
-            ])
-            ->count();
+        $monthStart = Carbon::now()->startOfMonth();
+        $monthEnd = Carbon::now()->endOfMonth();
+        $monthPayments = $payments->whereBetween('created_at', [$monthStart, $monthEnd]);
+        $monthVotes = $monthPayments->sum(function ($payment) {
+            return $payment->metadata['votes_count'] ?? 1;
+        });
         
-        // Top votants
-        $topVotants = $voteQuery->clone()
-            ->select('email_votant', 'customer_phone', DB::raw('COUNT(*) as vote_count'), DB::raw('SUM(montant) as total_amount'))
-            ->groupBy('email_votant', 'customer_phone')
-            ->orderBy('vote_count', 'desc')
+        // Top votants (basé sur les paiements)
+        $topVotants = Payment::where('candidat_id', $candidatId)
+            ->where('edition_id', $editionId)
+            ->whereIn('status', ['approved', 'completed', 'paid', 'success'])
+            ->when($categoryId, function ($query) use ($categoryId) {
+                $query->where('category_id', $categoryId);
+            })
+            ->select(
+                'customer_email',
+                'customer_phone',
+                'customer_firstname',
+                'customer_lastname',
+                DB::raw('SUM(metadata->"$.votes_count") as total_votes'),
+                DB::raw('SUM(amount) as total_amount'),
+                DB::raw('COUNT(*) as payment_count'),
+                DB::raw('MAX(created_at) as last_payment_date')
+            )
+            ->groupBy('customer_email', 'customer_phone', 'customer_firstname', 'customer_lastname')
+            ->orderBy('total_votes', 'desc')
+            ->orderBy('total_amount', 'desc')
             ->limit(10)
-            ->get();
+            ->get()
+            ->map(function ($payment) {
+                return [
+                    'email_votant' => $payment->customer_email,
+                    'customer_phone' => $payment->customer_phone,
+                    'vote_count' => (int) ($payment->total_votes ?? 1),
+                    'total_amount' => (float) $payment->total_amount,
+                    'payment_count' => $payment->payment_count,
+                    'last_vote_date' => $payment->last_payment_date
+                ];
+            });
 
         // Distribution par heure
-        $hourlyDistribution = Vote::where('candidat_id', $candidatId)
+        $hourlyDistribution = Payment::where('candidat_id', $candidatId)
             ->where('edition_id', $editionId)
-            ->where('is_paid', true)
+            ->whereIn('status', ['approved', 'completed', 'paid', 'success'])
             ->when($categoryId, function ($query) use ($categoryId) {
-                $query->where('categorie_id', $categoryId);
+                $query->where('category_id', $categoryId);
             })
-            ->select(DB::raw('HOUR(created_at) as hour'), DB::raw('COUNT(*) as votes'))
+            ->select(DB::raw('HOUR(created_at) as hour'), DB::raw('COUNT(*) as payments'))
             ->groupBy(DB::raw('HOUR(created_at)'))
             ->orderBy('hour')
             ->get()
             ->mapWithKeys(function ($item) {
-                return [$item->hour => $item->votes];
+                return [$item->hour => $item->payments];
             });
 
         // Méthodes de paiement
@@ -320,19 +391,10 @@ class DashboardCandidatController extends Controller
             ->groupBy('payment_method')
             ->get();
 
-        // Pays des votants
-        $votersByCountry = Vote::where('candidat_id', $candidatId)
-            ->where('edition_id', $editionId)
-            ->where('is_paid', true)
-            ->when($categoryId, function ($query) use ($categoryId) {
-                $query->where('categorie_id', $categoryId);
-            })
-            ->whereNotNull('country')
-            ->select('country', DB::raw('COUNT(*) as votes'))
-            ->groupBy('country')
-            ->orderBy('votes', 'desc')
-            ->limit(10)
-            ->get();
+        // Pays des votants (si disponible dans metadata)
+        $votersByCountry = [];
+        // Note: Les informations de pays ne sont pas disponibles dans l'exemple de données
+        // Vous devrez les ajouter dans le metadata si nécessaire
 
         return [
             'total_votes' => $totalVotes,
@@ -344,7 +406,9 @@ class DashboardCandidatController extends Controller
             'top_votants' => $topVotants,
             'hourly_distribution' => $hourlyDistribution,
             'payment_methods' => $paymentMethods,
-            'voters_by_country' => $votersByCountry
+            'voters_by_country' => $votersByCountry,
+            'total_payments' => $payments->count(),
+            'payment_avg' => $payments->count() > 0 ? round($totalAmount / $payments->count(), 2) : 0
         ];
     }
 
@@ -362,29 +426,27 @@ class DashboardCandidatController extends Controller
             $dayStart = $date->copy()->startOfDay();
             $dayEnd = $date->copy()->endOfDay();
             
-            $votesCount = Vote::where('candidat_id', $candidatId)
+            $payments = Payment::where('candidat_id', $candidatId)
                 ->where('edition_id', $editionId)
+                ->whereIn('status', ['approved', 'completed', 'paid', 'success'])
                 ->when($categoryId, function ($query) use ($categoryId) {
-                    $query->where('categorie_id', $categoryId);
+                    $query->where('category_id', $categoryId);
                 })
-                ->where('is_paid', true)
                 ->whereBetween('created_at', [$dayStart, $dayEnd])
-                ->count();
+                ->get();
                 
-            $amount = Vote::where('candidat_id', $candidatId)
-                ->where('edition_id', $editionId)
-                ->when($categoryId, function ($query) use ($categoryId) {
-                    $query->where('categorie_id', $categoryId);
-                })
-                ->where('is_paid', true)
-                ->whereBetween('created_at', [$dayStart, $dayEnd])
-                ->sum('amount');
+            $votesCount = $payments->sum(function ($payment) {
+                return $payment->metadata['votes_count'] ?? 1;
+            });
+            
+            $amount = $payments->sum('amount');
             
             $last7Days[] = [
                 'date' => $date->format('Y-m-d'),
                 'label' => $date->format('d/m'),
                 'votes' => $votesCount,
-                'amount' => (float) $amount
+                'amount' => (float) $amount,
+                'payments' => $payments->count()
             ];
         }
         
@@ -395,29 +457,27 @@ class DashboardCandidatController extends Controller
             $monthStart = $date->copy()->startOfMonth();
             $monthEnd = $date->copy()->endOfMonth();
             
-            $votesCount = Vote::where('candidat_id', $candidatId)
+            $payments = Payment::where('candidat_id', $candidatId)
                 ->where('edition_id', $editionId)
+                ->whereIn('status', ['approved', 'completed', 'paid', 'success'])
                 ->when($categoryId, function ($query) use ($categoryId) {
-                    $query->where('categorie_id', $categoryId);
+                    $query->where('category_id', $categoryId);
                 })
-                ->where('is_paid', true)
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
-                ->count();
+                ->get();
                 
-            $amount = Vote::where('candidat_id', $candidatId)
-                ->where('edition_id', $editionId)
-                ->when($categoryId, function ($query) use ($categoryId) {
-                    $query->where('categorie_id', $categoryId);
-                })
-                ->where('is_paid', true)
-                ->whereBetween('created_at', [$monthStart, $monthEnd])
-                ->sum('amount');
+            $votesCount = $payments->sum(function ($payment) {
+                return $payment->metadata['votes_count'] ?? 1;
+            });
+            
+            $amount = $payments->sum('amount');
             
             $last12Months[] = [
                 'date' => $date->format('Y-m'),
                 'label' => $date->format('M Y'),
                 'votes' => $votesCount,
-                'amount' => (float) $amount
+                'amount' => (float) $amount,
+                'payments' => $payments->count()
             ];
         }
         
@@ -461,15 +521,19 @@ class DashboardCandidatController extends Controller
         $ahead = $position - 1;
         $behind = $totalParticipants - $position;
 
-        // Progression sur 30 jours
-        $last30DaysVotes = Vote::where('candidat_id', $candidatId)
+        // Progression sur 30 jours (basée sur les paiements)
+        $last30DaysPayments = Payment::where('candidat_id', $candidatId)
             ->where('edition_id', $editionId)
+            ->whereIn('status', ['approved', 'completed', 'paid', 'success'])
             ->when($categoryId, function ($query) use ($categoryId) {
-                $query->where('categorie_id', $categoryId);
+                $query->where('category_id', $categoryId);
             })
-            ->where('is_paid', true)
             ->where('created_at', '>=', Carbon::now()->subDays(30))
-            ->count();
+            ->get();
+
+        $last30DaysVotes = $last30DaysPayments->sum(function ($payment) {
+            return $payment->metadata['votes_count'] ?? 1;
+        });
 
         return [
             'position' => $position,
@@ -478,12 +542,13 @@ class DashboardCandidatController extends Controller
             'behind' => $behind,
             'percentage' => $totalParticipants > 0 ? round(($position / $totalParticipants) * 100, 1) : 0,
             'last_30_days_votes' => $last30DaysVotes,
+            'last_30_days_amount' => $last30DaysPayments->sum('amount'),
             'top_10' => $candidatures->take(10)->values()
         ];
     }
 
     /**
-     * Obtenir la liste des votes
+     * Obtenir la liste des votes (paiements)
      */
     public function getVotesList(Request $request): JsonResponse
     {
@@ -503,8 +568,9 @@ class DashboardCandidatController extends Controller
                 'search' => 'nullable|string',
                 'date_from' => 'nullable|date',
                 'date_to' => 'nullable|date',
-                'sort_by' => 'nullable|in:created_at,amount,email_votant',
-                'sort_order' => 'nullable|in:asc,desc'
+                'sort_by' => 'nullable|in:created_at,amount,customer_email',
+                'sort_order' => 'nullable|in:asc,desc',
+                'status' => 'nullable|in:all,approved,pending,cancelled,failed'
             ]);
 
             if ($validator->fails()) {
@@ -530,17 +596,17 @@ class DashboardCandidatController extends Controller
                 ], 403);
             }
 
-            // Requête pour les votes
-            $votesQuery = Vote::where('candidat_id', $user->id)
+            // Requête pour les paiements
+            $paymentsQuery = Payment::where('candidat_id', $user->id)
                 ->where('edition_id', $request->edition_id)
-                ->where('is_paid', true)
                 ->when($request->category_id, function ($query) use ($request) {
-                    $query->where('categorie_id', $request->category_id);
+                    $query->where('category_id', $request->category_id);
                 })
                 ->when($request->search, function ($query) use ($request) {
                     $query->where(function ($q) use ($request) {
-                        $q->where('email_votant', 'like', "%{$request->search}%")
-                          ->orWhere('customer_phone', 'like', "%{$request->search}%");
+                        $q->where('customer_email', 'like', "%{$request->search}%")
+                          ->orWhere('customer_phone', 'like', "%{$request->search}%")
+                          ->orWhere('reference', 'like', "%{$request->search}%");
                     });
                 })
                 ->when($request->date_from, function ($query) use ($request) {
@@ -549,44 +615,93 @@ class DashboardCandidatController extends Controller
                 ->when($request->date_to, function ($query) use ($request) {
                     $query->whereDate('created_at', '<=', $request->date_to);
                 })
-                ->with(['edition:id,nom', 'category:id,nom', 'payment:id,reference,payment_method']);
+                ->when($request->status && $request->status !== 'all', function ($query) use ($request) {
+                    if ($request->status === 'approved') {
+                        $query->whereIn('status', ['approved', 'completed', 'paid', 'success']);
+                    } else {
+                        $query->where('status', $request->status);
+                    }
+                })
+                ->with(['edition:id,nom', 'category:id,nom', 'candidat:id,nom,prenoms']);
 
             // Tri
             $sortBy = $request->sort_by ?? 'created_at';
             $sortOrder = $request->sort_order ?? 'desc';
-            $votesQuery->orderBy($sortBy, $sortOrder);
+            $paymentsQuery->orderBy($sortBy, $sortOrder);
 
             // Pagination
             $perPage = $request->per_page ?? 20;
-            $votes = $votesQuery->paginate($perPage);
+            $payments = $paymentsQuery->paginate($perPage);
+
+            // Transformer les paiements en format "votes"
+            $transformedPayments = $payments->map(function ($payment) {
+                $votesCount = $payment->metadata['votes_count'] ?? 1;
+                return [
+                    'id' => $payment->id,
+                    'reference' => $payment->reference,
+                    'amount' => $payment->amount,
+                    'votes_count' => $votesCount,
+                    'status' => $payment->status,
+                    'payment_method' => $payment->payment_method,
+                    'created_at' => $payment->created_at,
+                    'updated_at' => $payment->updated_at,
+                    'is_paid' => in_array($payment->status, ['approved', 'completed', 'paid', 'success']),
+                    'votant' => [
+                        'email' => $payment->customer_email,
+                        'phone' => $payment->customer_phone,
+                        'firstname' => $payment->customer_firstname,
+                        'lastname' => $payment->customer_lastname,
+                        'fullname' => trim($payment->customer_firstname . ' ' . $payment->customer_lastname)
+                    ],
+                    'edition' => $payment->edition,
+                    'category' => $payment->category,
+                    'candidat' => $payment->candidat,
+                    'metadata' => $payment->metadata
+                ];
+            });
 
             // Statistiques de la période
-            $statsQuery = Vote::where('candidat_id', $user->id)
+            $statsQuery = Payment::where('candidat_id', $user->id)
                 ->where('edition_id', $request->edition_id)
-                ->where('is_paid', true)
                 ->when($request->category_id, function ($query) use ($request) {
-                    $query->where('categorie_id', $request->category_id);
+                    $query->where('category_id', $request->category_id);
                 })
                 ->when($request->date_from, function ($query) use ($request) {
                     $query->whereDate('created_at', '>=', $request->date_from);
                 })
                 ->when($request->date_to, function ($query) use ($request) {
                     $query->whereDate('created_at', '<=', $request->date_to);
-                });
+                })
+                ->whereIn('status', ['approved', 'completed', 'paid', 'success']);
+
+            $paymentsForStats = $statsQuery->get();
+            $totalVotes = $paymentsForStats->sum(function ($payment) {
+                return $payment->metadata['votes_count'] ?? 1;
+            });
 
             $stats = [
-                'total_votes' => $statsQuery->count(),
-                'total_amount' => (float) $statsQuery->sum('amount'),
-                'unique_voters' => $statsQuery->distinct('email_votant')->count('email_votant'),
-                'avg_vote_amount' => $statsQuery->avg('montant') ? round($statsQuery->avg('montant'), 2) : 0
+                'total_votes' => $totalVotes,
+                'total_amount' => (float) $paymentsForStats->sum('amount'),
+                'unique_voters' => $paymentsForStats->unique('customer_email')->count(),
+                'avg_vote_amount' => $totalVotes > 0 ? round($paymentsForStats->sum('amount') / $totalVotes, 2) : 0,
+                'total_payments' => $paymentsForStats->count(),
+                'avg_payment_amount' => $paymentsForStats->count() > 0 ? round($paymentsForStats->sum('amount') / $paymentsForStats->count(), 2) : 0
             ];
 
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'votes' => $votes,
+                    'votes' => [
+                        'data' => $transformedPayments,
+                        'current_page' => $payments->currentPage(),
+                        'last_page' => $payments->lastPage(),
+                        'per_page' => $payments->perPage(),
+                        'total' => $payments->total(),
+                        'from' => $payments->firstItem(),
+                        'to' => $payments->lastItem()
+                    ],
                     'stats' => $stats,
-                    'filters' => $request->only(['edition_id', 'category_id', 'search', 'date_from', 'date_to', 'sort_by', 'sort_order'])
+                    'filters' => $request->only(['edition_id', 'category_id', 'search', 'date_from', 'date_to', 'sort_by', 'sort_order', 'status'])
                 ]
             ]);
 
@@ -604,7 +719,7 @@ class DashboardCandidatController extends Controller
     }
 
     /**
-     * Exporter les votes en Excel
+     * Exporter les votes en Excel (paiements)
      */
     public function exportVotes(Request $request)
     {
@@ -696,7 +811,7 @@ class DashboardCandidatController extends Controller
                 ->when($request->status, function ($query) use ($request) {
                     $query->where('status', $request->status);
                 })
-                ->with(['edition:id,nom', 'category:id,nom'])
+                ->with(['edition:id,nom', 'category:id,nom', 'candidat:id,nom,prenoms'])
                 ->orderBy('created_at', 'desc');
 
             $perPage = $request->per_page ?? 20;
@@ -711,12 +826,21 @@ class DashboardCandidatController extends Controller
                     $query->where('category_id', $request->category_id);
                 });
 
+            $allPayments = $statsQuery->get();
+            $approvedPayments = $allPayments->whereIn('status', ['approved', 'completed', 'paid', 'success']);
+
             $stats = [
-                'total_payments' => $statsQuery->count(),
-                'successful_payments' => $statsQuery->whereIn('status', ['approved', 'completed', 'paid', 'success'])->count(),
-                'total_amount' => (float) $statsQuery->whereIn('status', ['approved', 'completed', 'paid', 'success'])->sum('amount'),
-                'mobile_money' => $statsQuery->where('payment_method', 'mobile_money')->count(),
-                'card' => $statsQuery->where('payment_method', 'card')->count()
+                'total_payments' => $allPayments->count(),
+                'successful_payments' => $approvedPayments->count(),
+                'total_amount' => (float) $approvedPayments->sum('amount'),
+                'mobile_money' => $allPayments->where('payment_method', 'mobile_money')->count(),
+                'card' => $allPayments->where('payment_method', 'card')->count(),
+                'pending_payments' => $allPayments->where('status', 'pending')->count(),
+                'cancelled_payments' => $allPayments->where('status', 'cancelled')->count(),
+                'failed_payments' => $allPayments->where('status', 'failed')->count(),
+                'total_votes' => $approvedPayments->sum(function ($payment) {
+                    return $payment->metadata['votes_count'] ?? 1;
+                })
             ];
 
             // Distribution par statut
@@ -799,26 +923,40 @@ class DashboardCandidatController extends Controller
 
             $limit = $request->limit ?? 10;
 
-            $topVotants = Vote::where('candidat_id', $user->id)
+            $topVotants = Payment::where('candidat_id', $user->id)
                 ->where('edition_id', $request->edition_id)
-                ->where('is_paid', true)
+                ->whereIn('status', ['approved', 'completed', 'paid', 'success'])
                 ->when($request->category_id, function ($query) use ($request) {
-                    $query->where('categorie_id', $request->category_id);
+                    $query->where('category_id', $request->category_id);
                 })
                 ->select(
-                    'email_votant',
+                    'customer_email',
                     'customer_phone',
                     'customer_firstname',
                     'customer_lastname',
-                    DB::raw('COUNT(*) as vote_count'),
+                    DB::raw('SUM(metadata->"$.votes_count") as total_votes'),
                     DB::raw('SUM(amount) as total_amount'),
-                    DB::raw('MAX(created_at) as last_vote_date')
+                    DB::raw('COUNT(*) as payment_count'),
+                    DB::raw('MAX(created_at) as last_payment_date')
                 )
-                ->groupBy('email_votant', 'customer_phone', 'customer_firstname', 'customer_lastname')
-                ->orderBy('vote_count', 'desc')
+                ->groupBy('customer_email', 'customer_phone', 'customer_firstname', 'customer_lastname')
+                ->orderBy('total_votes', 'desc')
                 ->orderBy('total_amount', 'desc')
                 ->limit($limit)
-                ->get();
+                ->get()
+                ->map(function ($payment) {
+                    return [
+                        'email_votant' => $payment->customer_email,
+                        'customer_phone' => $payment->customer_phone,
+                        'customer_firstname' => $payment->customer_firstname,
+                        'customer_lastname' => $payment->customer_lastname,
+                        'vote_count' => (int) ($payment->total_votes ?? 1),
+                        'total_amount' => (float) $payment->total_amount,
+                        'payment_count' => $payment->payment_count,
+                        'last_vote_date' => $payment->last_payment_date,
+                        'avg_amount_per_vote' => $payment->total_votes > 0 ? round($payment->total_amount / $payment->total_votes, 2) : 0
+                    ];
+                });
 
             return response()->json([
                 'success' => true,
@@ -907,16 +1045,20 @@ class DashboardCandidatController extends Controller
                     $periodEnd = $date->copy()->endOfMonth();
                 }
 
-                $votesQuery = Vote::where('candidat_id', $user->id)
+                $payments = Payment::where('candidat_id', $user->id)
                     ->where('edition_id', $request->edition_id)
-                    ->where('is_paid', true)
+                    ->whereIn('status', ['approved', 'completed', 'paid', 'success'])
                     ->when($request->category_id, function ($query) use ($request) {
-                        $query->where('categorie_id', $request->category_id);
+                        $query->where('category_id', $request->category_id);
                     })
-                    ->whereBetween('created_at', [$periodStart, $periodEnd]);
+                    ->whereBetween('created_at', [$periodStart, $periodEnd])
+                    ->get();
 
-                $votesCount = $votesQuery->count();
-                $amount = $votesQuery->sum('amount');
+                $votesCount = $payments->sum(function ($payment) {
+                    return $payment->metadata['votes_count'] ?? 1;
+                });
+
+                $amount = $payments->sum('amount');
 
                 $evolution[] = [
                     'date' => $date->format('Y-m-d'),
@@ -926,14 +1068,16 @@ class DashboardCandidatController extends Controller
                     'period_end' => $periodEnd->format('Y-m-d'),
                     'votes' => $votesCount,
                     'amount' => (float) $amount,
-                    'avg_per_vote' => $votesCount > 0 ? round($amount / $votesCount, 2) : 0
+                    'payments' => $payments->count(),
+                    'avg_per_vote' => $votesCount > 0 ? round($amount / $votesCount, 2) : 0,
+                    'avg_per_payment' => $payments->count() > 0 ? round($amount / $payments->count(), 2) : 0
                 ];
 
                 // Avancer à la période suivante
                 if ($period === 'week') {
-                    $currentDate->subWeek();
+                    $date->subWeek();
                 } elseif ($period === 'month') {
-                    $currentDate->subMonth();
+                    $date->subMonth();
                 }
             }
 
