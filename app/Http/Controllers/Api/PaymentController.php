@@ -468,7 +468,7 @@ class PaymentController extends Controller
             'canceled' => 'cancelled',
             'declined' => 'failed',
             'refunded' => 'refunded',
-            'transferred' => 'completed'
+            'transferred' => 'approved'
         ];
         
         return $statusMap[$fedapayStatus] ?? $fedapayStatus;
