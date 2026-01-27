@@ -8,7 +8,7 @@ use App\Http\Controllers\Api\Candidat\CandidatController;
 use App\Http\Controllers\Api\DashboardCandidatController;
 use App\Http\Controllers\Api\CandidatureController;
 use App\Http\Controllers\Api\Candidat\ChatController;
-use App\Http\Controllers\VoteController;
+use App\Http\Controllers\Api\VoteController;
 use App\Http\Controllers\Api\PaymentController;
 
 // routes/web.php
@@ -313,9 +313,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Routes pour les statistiques générales
     Route::prefix('stats')->group(function () {
-        Route::get('/candidat', [StatsController::class, 'getCandidatStats']);
-        Route::get('/edition/{editionId}', [StatsController::class, 'getEditionStats']);
-        Route::get('/category/{categoryId}', [StatsController::class, 'getCategoryStats']);
+        Route::get('/candidat', [DashboardCandidatController::class, 'getCandidatStats']);
+        Route::get('/edition/{editionId}', [DashboardCandidatController::class, 'getEditionStats']);
+        Route::get('/category/{categoryId}', [DashboardCandidatController::class, 'getCategoryStats']);
     });
 });
 

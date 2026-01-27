@@ -408,7 +408,7 @@ class AdminController extends Controller{
                 ],
                 'categories' => $categoriesData,
                 'user_votes' => $userVotes,
-                'user_authenticated' => $request->user() ? true : false,
+                'user_authenticated' => $request->user() ? true : true,
             ]);
             
         } catch (\Exception $e) {
