@@ -128,7 +128,7 @@ class PaymentController extends Controller
     /**
      * INITIATION DE PAIEMENT - Version SIMPLIFIÉE et ROBUSTE
      */
-    public function initiatePaymen(Request $request): JsonResponse
+    public function initiatePayment(Request $request): JsonResponse
     {
         Log::info('=== INITIATION PAIEMENT - DÉBUT ===', [
             'ip' => $request->ip(),
