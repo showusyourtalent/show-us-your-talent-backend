@@ -50,12 +50,6 @@ class PaymentController extends Controller
             // Vérifier si l'édition existe avec une connexion FORCÉE
             $editionExists = $this->forceCheckRecordExists($connection, 'editions', $data['edition_id']);
             
-            if (!$editionExists) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Édition non trouvée'
-                ], 404);
-            }
 
             // Vérifier le candidat
             $candidatExists = $this->forceCheckRecordExists($connection, 'users', $data['candidat_id']);
