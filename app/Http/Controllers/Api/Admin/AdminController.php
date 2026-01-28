@@ -124,13 +124,14 @@ class AdminController extends Controller
                 'user_authenticated' => $request->user() ? true : false,
             ]);
             
-        } catch (\Exception $e) {
+        } 
+        catch (\Exception $e) {
             DB::rollBack();
             Log::error('Erreur récupération candidats edition active: ' . $e->getMessage());
             
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur serveur lors de la récupération des candidats'
+                'message' => 'Erreur serveur lors de la récupération des candidats' . $e->getMessage()
             ], 500);
         }
     }
