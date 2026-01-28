@@ -12,16 +12,268 @@ use App\Models\Edition;
 use App\Models\Candidature;
 use App\Models\Vote;
 use App\Models\Payment;
-use App\Http\Resources\CandidatResource;
-use App\Http\Resources\CategorieResource;
 use App\Models\Category;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 
-
-class AdminController extends Controller{
+class AdminController extends Controller
+{
+    /**
+     * Récupérer les candidats de l'édition active - VERSION OPTIMISÉE
+     */
+    public function getCandidatsEditionActive(Request $request)
+    {
+        DB::beginTransaction();
+        try {
+            // 1. Trouver l'édition active avec une requête optimisée
+            $edition = Edition::where('statut', 'active')
+                ->whereIn('statut_votes', ['en_cours', 'en_attente', 'termine'])
+                ->latest('created_at')
+                ->first();
+            
+            if (!$edition) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Aucune édition disponible pour le moment',
+                    'edition' => null,
+                    'categories' => [],
+                    'statistiques' => [
+                        'total_votes' => 0,
+                        'total_candidats' => 0,
+                        'total_votes_today' => 0,
+                        'date_dernier_vote' => null
+                    ]
+                ], 200);
+            }
+            
+            // 2. Récupérer TOUT en une seule requête avec relations optimisées
+            $categories = Category::where('edition_id', $edition->id)
+                ->where('active', true)
+                ->with(['candidatures' => function($query) use ($edition) {
+                    // Charger toutes les relations nécessaires en une fois
+                    $query->where('edition_id', $edition->id)
+                        ->where('statut', 'validee')
+                        ->with(['candidat' => function($q) {
+                            $q->select('id', 'nom', 'prenoms', 'sexe', 'photo_url', 'ethnie', 
+                                     'universite', 'filiere');
+                        }])
+                        ->orderBy('nombre_votes', 'desc');
+                }])
+                ->orderBy('ordre_affichage')
+                ->get(['id', 'nom', 'description', 'ordre_affichage']);
+            
+            // 3. Calculer les statistiques AVANT la boucle (une seule requête)
+            $stats = $this->calculateStatistics($edition->id);
+            
+            // 4. Calculer les votes de l'utilisateur (une seule requête)
+            $userVotes = $request->user() 
+                ? $this->getUserVotes($edition->id, $request->user()->id)
+                : [];
+            
+            // 5. Préparer les données de l'édition (pas de requêtes supplémentaires)
+            $editionData = $this->prepareEditionData($edition);
+            
+            // 6. Préparer les données des catégories (traitement en mémoire)
+            $categoriesData = $categories->map(function($category) use ($userVotes) {
+                $candidats = $category->candidatures->map(function($candidature) use ($category, $userVotes) {
+                    if (!$candidature->candidat) return null;
+                    
+                    return [
+                        'id' => $candidature->candidat->id,
+                        'candidature_id' => $candidature->id,
+                        'nom' => $candidature->candidat->nom,
+                        'prenoms' => $candidature->candidat->prenoms,
+                        'nom_complet' => $candidature->candidat->prenoms . ' ' . $candidature->candidat->nom,
+                        'sexe' => $candidature->candidat->sexe,
+                        'photo_url' => $candidature->candidat->photo_url,
+                        'photo' => $candidature->candidat->photo_url,
+                        'ethnie' => $candidature->candidat->ethnie,
+                        'universite' => $candidature->candidat->universite,
+                        'filiere' => $candidature->candidat->filiere,
+                        'video_url' => $candidature->video_url,
+                        'nombre_votes' => (int)($candidature->nombre_votes ?? 0),
+                        'a_deja_vote' => isset($userVotes[$candidature->candidat_id]),
+                        'categorie_id' => $candidature->category_id,
+                        'categorie_nom' => $category->nom,
+                    ];
+                })->filter()->values();
+                
+                $totalVotesCategorie = $candidats->sum('nombre_votes');
+                
+                return [
+                    'id' => $category->id,
+                    'nom' => $category->nom,
+                    'description' => $category->description,
+                    'ordre_affichage' => $category->ordre_affichage,
+                    'candidats' => $candidats,
+                    'total_votes_categorie' => $totalVotesCategorie,
+                    'total_candidats_categorie' => $candidats->count(),
+                ];
+            });
+            
+            DB::commit();
+            
+            return response()->json([
+                'success' => true,
+                'message' => $this->getEditionMessage($edition->statut_votes),
+                'edition' => $editionData,
+                'statistiques' => $stats,
+                'categories' => $categoriesData,
+                'user_votes' => $userVotes,
+                'user_authenticated' => $request->user() ? true : false,
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Erreur récupération candidats edition active: ' . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur serveur lors de la récupération des candidats'
+            ], 500);
+        }
+    }
+    
+    /**
+     * Calculer les statistiques - OPTIMISÉ
+     */
+    private function calculateStatistics($editionId)
+    {
+        // Une seule requête pour toutes les statistiques
+        $result = DB::select("
+            SELECT 
+                -- Total des votes (fees)
+                COALESCE(SUM(
+                    CASE 
+                        WHEN status = 'approved' AND fees IS NOT NULL 
+                        THEN fees 
+                        WHEN status = 'approved' AND fees IS NULL 
+                        THEN amount / 100 
+                        ELSE 0 
+                    END
+                ), 0) as total_votes,
+                
+                -- Nombre de candidats uniques
+                (SELECT COUNT(DISTINCT candidat_id) 
+                 FROM candidatures 
+                 WHERE edition_id = ? AND statut = 'validee') as total_candidats,
+                
+                -- Votes d'aujourd'hui
+                COALESCE(SUM(
+                    CASE 
+                        WHEN status = 'approved' AND DATE(created_at) = CURRENT_DATE AND fees IS NOT NULL 
+                        THEN fees 
+                        WHEN status = 'approved' AND DATE(created_at) = CURRENT_DATE AND fees IS NULL 
+                        THEN amount / 100 
+                        ELSE 0 
+                    END
+                ), 0) as total_votes_today,
+                
+                -- Date du dernier vote
+                MAX(CASE WHEN status = 'approved' THEN created_at END) as date_dernier_vote,
+                
+                -- Nombre de catégories
+                (SELECT COUNT(*) FROM categories WHERE edition_id = ? AND active = true) as total_categories
+            FROM payments
+            WHERE edition_id = ?
+        ", [$editionId, $editionId, $editionId])[0];
+        
+        return [
+            'total_votes' => (int)$result->total_votes,
+            'total_candidats' => (int)$result->total_candidats,
+            'total_categories' => (int)$result->total_categories,
+            'total_votes_today' => (int)$result->total_votes_today,
+            'date_dernier_vote' => $result->date_dernier_vote 
+                ? Carbon::parse($result->date_dernier_vote)->format('Y-m-d H:i:s') 
+                : null
+        ];
+    }
+    
+    /**
+     * Récupérer les votes de l'utilisateur - OPTIMISÉ
+     */
+    private function getUserVotes($editionId, $userId)
+    {
+        // Une seule requête pour tous les votes
+        $votes = DB::table('payments')
+            ->where('edition_id', $editionId)
+            ->where('user_id', $userId)
+            ->where('status', 'approved')
+            ->pluck('candidat_id')
+            ->toArray();
+        
+        return array_fill_keys($votes, true);
+    }
+    
+    /**
+     * Préparer les données de l'édition
+     */
+    private function prepareEditionData(Edition $edition)
+    {
+        $now = Carbon::now();
+        $tempsRestant = null;
+        
+        if ($edition->statut_votes === 'en_cours' && $edition->date_fin_votes) {
+            $finVotes = Carbon::parse($edition->date_fin_votes);
+            
+            if ($now->lt($finVotes)) {
+                $tempsRestant = $this->calculateTimeRemaining($now, $finVotes, 'Fin des votes dans');
+            }
+        } 
+        elseif ($edition->statut_votes === 'en_attente' && $edition->date_debut_votes) {
+            $debutVotes = Carbon::parse($edition->date_debut_votes);
+            
+            if ($now->lt($debutVotes)) {
+                $tempsRestant = $this->calculateTimeRemaining($now, $debutVotes, 'Début des votes dans');
+            }
+        }
+        
+        return [
+            'id' => $edition->id,
+            'nom' => $edition->nom,
+            'annee' => $edition->annee,
+            'numero_edition' => $edition->numero_edition,
+            'statut_votes' => $edition->statut_votes,
+            'votes_ouverts' => $edition->votes_ouverts,
+            'inscriptions_ouvertes' => $edition->inscriptions_ouvertes,
+            'date_debut_votes' => $edition->date_debut_votes,
+            'date_fin_votes' => $edition->date_fin_votes,
+            'date_debut_inscriptions' => $edition->date_debut_inscriptions,
+            'date_fin_inscriptions' => $edition->date_fin_inscriptions,
+            'peut_voter' => $edition->peut_voter ?? false,
+            'temps_restant' => $tempsRestant,
+        ];
+    }
+    
+    /**
+     * Calculer le temps restant
+     */
+    private function calculateTimeRemaining($now, $targetDate, $message)
+    {
+        $diff = $now->diff($targetDate);
+        
+        return [
+            'jours' => $diff->days,
+            'heures' => $diff->h,
+            'minutes' => $diff->i,
+            'secondes' => $diff->s,
+            'total_secondes' => $now->diffInSeconds($targetDate),
+            'message' => $message
+        ];
+    }
+    
+    /**
+     * Obtenir le message selon le statut
+     */
+    private function getEditionMessage($statutVotes)
+    {
+        return match($statutVotes) {
+            'en_cours' => 'Édition en cours de vote',
+            'en_attente' => 'Votes en attente',
+            default => 'Informations sur l\'édition'
+        };
+    }
 
     // Gestion des utilisateurs
     public function getUsers(Request $request){
@@ -131,296 +383,6 @@ class AdminController extends Controller{
         return response()->json($stats);
     }
 
-    /**
-     * Récupérer les candidats de l'édition active
-     */
-    public function getCandidatsEditionActive(Request $request){
-        try {
-            // Trouver l'édition active la plus récente
-            $edition = Edition::where('statut', 'active')
-                ->where(function($query) {
-                    $query->where('statut_votes', 'en_cours')
-                        ->orWhere('statut_votes', 'en_attente')
-                        ->orWhere('statut_votes', 'termine');
-                })
-                ->latest()
-                ->first();
-            
-            if (!$edition) {
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Aucune édition disponible pour le moment',
-                    'edition' => null,
-                    'categories' => [],
-                    'statistiques' => [
-                        'total_votes' => 0,
-                        'total_candidats' => 0,
-                        'total_votes_today' => 0,
-                        'date_dernier_vote' => null
-                    ]
-                ], 200);
-            }
-            
-            // Mettre à jour le statut des votes si nécessaire
-            if (method_exists($edition, 'mettreAJourStatutVotes')) {
-                $edition->mettreAJourStatutVotes();
-            }
-            
-            if ($edition->isDirty(['votes_ouverts', 'statut_votes'])) {
-                $edition->saveQuietly();
-            }
-            
-            // Récupérer toutes les catégories avec leurs candidatures et candidats
-            $categories = Category::where('edition_id', $edition->id)
-                ->where('active', true)
-                ->with(['candidatures' => function($query) use ($edition) {
-                    $query->where('edition_id', $edition->id)
-                        ->where('statut', 'validee')
-                        ->with(['candidat' => function($q) {
-                            // Utilisez uniquement les colonnes qui existent dans la table users
-                            $q->select('id', 'nom', 'prenoms', 'sexe', 'photo_url', 'ethnie', 
-                                    'universite', 'filiere');
-                        }])
-                        ->withCount(['votes' => function($q) use ($edition) {
-                            $q->where('edition_id', $edition->id);
-                        }]);
-                }])
-                ->orderBy('ordre_affichage')
-                ->get();
-            
-            // ---- NOUVELLE LOGIQUE AVANT LE RETOUR ----
-            // Récupérer tous les paiements approuvés pour cette édition
-            $paiements = Payment::where('edition_id', $edition->id)
-                ->where('status', 'approved')
-                ->get();
-            
-            // Parcourir chaque paiement et mettre à jour la colonne fees
-            foreach ($paiements as $paiement) {
-                // Calculer les fees (montant / 100)
-                $fees = intval($paiement->montant / 100);
-                
-                // Mettre à jour la colonne fees si elle existe
-                if (Schema::hasColumn('payments', 'fees')) {
-                    $paiement->fees = $fees;
-                    $paiement->saveQuietly();
-                }
-            }
-            
-            // Maintenant, pour chaque candidature, calculer la somme des fees
-            // en groupant par candidat, édition et catégorie
-            foreach ($categories as $categorie) {
-                foreach ($categorie->candidatures as $candidature) {
-                    // Récupérer les candidatures liées à ce candidat pour cette édition et catégorie
-                    $candidaturesCategorie = Candidature::where('candidat_id', $candidature->candidat_id)
-                        ->where('edition_id', $edition->id)
-                        ->where('category_id', $categorie->id)
-                        ->where("statut", "validee")
-                        ->get();
-                    
-                    // Pour chaque candidature, calculer la somme des fees
-                    foreach ($candidaturesCategorie as $candidatureCat) {
-                        // Récupérer tous les paiements pour cette candidature
-                        $paiementsCandidature = Payment::where('candidat_id', $candidatureCat->candidat_id)
-                            ->where('edition_id', $edition->id)
-                            ->where('status', 'approved')
-                            ->get();
-                        
-                        // Calculer la somme des fees
-                        $sommeFees = $paiementsCandidature->sum('fees');
-                        
-                        // Mettre à jour la colonne nombre_votes dans la table candidatures
-                        $candidatureCat->nombre_votes = $sommeFees;
-                        $candidatureCat->saveQuietly();
-                    }
-                }
-            }
-            
-            // Recharger les candidatures avec les nouveaux votes
-            $categories->each(function($categorie) use ($edition) {
-                $categorie->load(['candidatures' => function($query) use ($edition) {
-                    $query->where('edition_id', $edition->id)
-                        ->where('statut', 'validee')
-                        ->with(['candidat' => function($q) {
-                            $q->select('id', 'nom', 'prenoms', 'sexe', 'photo_url', 'ethnie', 
-                                    'universite', 'filiere');
-                        }]);
-                }]);
-            });
-            
-            // Recalculer les votes_count pour chaque candidature
-            foreach ($categories as $categorie) {
-                foreach ($categorie->candidatures as $candidature) {
-                    // Utiliser directement nombre_votes que nous venons de mettre à jour
-                    $candidature->votes_count = $candidature->nombre_votes ?? 0;
-                }
-            }
-            // ---- FIN DE LA NOUVELLE LOGIQUE ----
-            
-            // Calculer les statistiques (MAINTENANT AVEC LES FEES)
-            $totalVotes = Payment::where('edition_id', $edition->id)
-                                ->where('status', 'approved')
-                                ->sum('fees');
-            
-            // Compter le nombre total de candidats uniques
-            $totalCandidats = Candidature::where('edition_id', $edition->id)
-                ->where('statut', 'validée')
-                ->distinct('candidat_id')
-                ->count('candidat_id');
-            
-            // Votes d'aujourd'hui (avec fees)
-            $totalVotesToday = Payment::where('edition_id', $edition->id)
-                                    ->where('status', 'approved')
-                                    ->whereDate('created_at', Carbon::today())
-                                    ->sum('fees');
-            
-            // Calcul du temps restant
-            $now = Carbon::now();
-            $tempsRestant = null;
-            
-            if ($edition->statut_votes === 'en_cours' && $edition->date_fin_votes) {
-                $finVotes = Carbon::parse($edition->date_fin_votes);
-                
-                if ($now->lt($finVotes)) {
-                    $diff = $now->diff($finVotes);
-                    
-                    $tempsRestant = [
-                        'jours' => $diff->days,
-                        'heures' => $diff->h,
-                        'minutes' => $diff->i,
-                        'secondes' => $diff->s,
-                        'total_secondes' => $now->diffInSeconds($finVotes),
-                        'message' => 'Fin des votes dans'
-                    ];
-                }
-            } 
-            elseif ($edition->statut_votes === 'en_attente' && $edition->date_debut_votes) {
-                $debutVotes = Carbon::parse($edition->date_debut_votes);
-                
-                if ($now->lt($debutVotes)) {
-                    $diff = $now->diff($debutVotes);
-                    
-                    $tempsRestant = [
-                        'jours' => $diff->days,
-                        'heures' => $diff->h,
-                        'minutes' => $diff->i,
-                        'secondes' => $diff->s,
-                        'total_secondes' => $now->diffInSeconds($debutVotes),
-                        'message' => 'Début des votes dans'
-                    ];
-                }
-            }
-            
-            // Vérifier si l'utilisateur a déjà voté
-            $userVotes = [];
-            if ($request->user()) {
-                $votesUtilisateur = Payment::where('edition_id', $edition->id)
-                    ->where('user_id', $request->user()->id)
-                    ->pluck('candidature_id')
-                    ->toArray();
-                
-                foreach ($categories as $categorie) {
-                    foreach ($categorie->candidatures as $candidature) {
-                        if (in_array($candidature->id, $votesUtilisateur)) {
-                            $userVotes[$candidature->candidat_id] = true;
-                        }
-                    }
-                }
-            }
-            
-            // Préparer les données de l'édition
-            $editionData = [
-                'id' => $edition->id,
-                'nom' => $edition->nom,
-                'annee' => $edition->annee,
-                'numero_edition' => $edition->numero_edition,
-                'statut_votes' => $edition->statut_votes,
-                'votes_ouverts' => $edition->votes_ouverts,
-                'inscriptions_ouvertes' => $edition->inscriptions_ouvertes,
-                'date_debut_votes' => $edition->date_debut_votes,
-                'date_fin_votes' => $edition->date_fin_votes,
-                'date_debut_inscriptions' => $edition->date_debut_inscriptions,
-                'date_fin_inscriptions' => $edition->date_fin_inscriptions,
-                'peut_voter' => $edition->peut_voter ?? false,
-                'temps_restant' => $tempsRestant,
-            ];
-            
-            // Préparer les catégories avec leurs candidats
-            $categoriesData = $categories->map(function($categorie) use ($userVotes) {
-                // Trier les candidatures par nombre de votes (descendant)
-                $candidaturesTriees = $categorie->candidatures->sortByDesc('nombre_votes');
-                
-                $candidatsAvecVotes = $candidaturesTriees->map(function($candidature) use ($categorie, $userVotes) {
-                    if (!$candidature->candidat) return null;
-                    
-                    // Notez que video_url vient de la table candidatures, pas de users
-                    return [
-                        'id' => $candidature->candidat->id,
-                        'candidature_id' => $candidature->id,
-                        'nom' => $candidature->candidat->nom,
-                        'prenoms' => $candidature->candidat->prenoms,
-                        'nom_complet' => $candidature->candidat->prenoms . ' ' . $candidature->candidat->nom,
-                        'sexe' => $candidature->candidat->sexe,
-                        'photo_url' => $candidature->candidat->photo_url,
-                        'photo' => $candidature->candidat->photo_url, // Alias pour compatibilité
-                        'ethnie' => $candidature->candidat->ethnie,
-                        'universite' => $candidature->candidat->universite,
-                        'filiere' => $candidature->candidat->filiere,
-                        'video_url' => $candidature->video_url, // Important: vient de candidatures
-                        'nombre_votes' => $candidature->nombre_votes ?? 0,
-                        'a_deja_vote' => $userVotes[$candidature->candidat_id] ?? false,
-                        'categorie_id' => $candidature->categorie_id,
-                        'categorie_nom' => $categorie->nom,
-                    ];
-                })
-                ->filter()
-                ->values();
-                
-                return [
-                    'id' => $categorie->id,
-                    'nom' => $categorie->nom,
-                    'description' => $categorie->description,
-                    'ordre_affichage' => $categorie->ordre_affichage,
-                    'candidats' => $candidatsAvecVotes,
-                    'total_votes_categorie' => $candidatsAvecVotes->sum('nombre_votes'),
-                    'total_candidats_categorie' => $candidatsAvecVotes->count(),
-                ];
-            });
-            
-            return response()->json([
-                'success' => true,
-                'message' => $edition->statut_votes === 'en_cours' 
-                    ? 'Édition en cours de vote' 
-                    : ($edition->statut_votes === 'en_attente' 
-                        ? 'Votes en attente' 
-                        : 'Informations sur l\'édition'),
-                'edition' => $editionData,
-                'statistiques' => [
-                    'total_votes' => $totalVotes,
-                    'total_candidats' => $totalCandidats,
-                    'total_categories' => $categories->count(),
-                    'total_votes_today' => $totalVotesToday,
-                    'date_dernier_vote' => Payment::where('edition_id', $edition->id)
-                        ->where('status', 'approved')
-                        ->latest()
-                        ->first()
-                        ?->created_at
-                        ?->format('Y-m-d H:i:s')
-                ],
-                'categories' => $categoriesData,
-                'user_votes' => $userVotes,
-                'user_authenticated' => $request->user() ? true : true,
-            ]);
-            
-        } catch (\Exception $e) {
-            Log::error('Erreur récupération candidats edition active: ' . $e->getMessage());
-            Log::error($e->getTraceAsString());
-            
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur serveur lors de la récupération des candidats: ' . $e->getMessage()
-            ], 500);
-        }
-    }
 
     /**
      * Récupérer un candidat spécifique
@@ -490,7 +452,7 @@ class AdminController extends Controller{
                 'candidats' => $candidats
             ]);
         } catch (\Exception $e) {
-            Log::error('Erreur récupération candidats par catégorie: ' . e->getMessage());
+            Log::error('Erreur récupération candidats par catégorie: ');
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur lors de la récupération des candidats'
@@ -652,7 +614,7 @@ class AdminController extends Controller{
             ]);
             
         } catch (\Exception $e) {
-            \Log::error('Erreur vote: ' . $e->getMessage());
+            Log::error('Erreur vote: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur lors de l\'enregistrement du vote'
@@ -734,7 +696,7 @@ class AdminController extends Controller{
             ]);
             
         } catch (\Exception $e) {
-            \Log::error('Erreur statistiques vote: ' . $e->getMessage());
+            Log::error('Erreur statistiques vote: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur serveur'
@@ -800,7 +762,7 @@ class AdminController extends Controller{
             ]);
             
         } catch (\Exception $e) {
-            \Log::error('Erreur résultats publics: ' . $e->getMessage());
+            Log::error('Erreur résultats publics: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur serveur'

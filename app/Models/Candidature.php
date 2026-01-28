@@ -40,6 +40,20 @@ class Candidature extends Model
         return $this->belongsTo(Edition::class);
     }
 
+    // Dans App\Models\Candidature.php
+    public function approvedPayments()
+    {
+        return $this->hasMany(Payment::class, 'candidat_id', 'candidat_id')
+            ->where('status', 'approved')
+            ->whereColumn('payments.edition_id', 'candidatures.edition_id')
+            ->whereColumn('payments.category_id', 'candidatures.category_id');
+    }
+
+    public function totalVotesCount()
+    {
+        return $this->approvedPayments()->sum(DB::raw('COALESCE(fees, amount / 100)'));
+    }
+
     public function category()
     {
         return $this->belongsTo(Category::class);

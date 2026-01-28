@@ -94,4 +94,26 @@ class User extends Authenticatable{
             $q->where('edition_id', $editionId);
         }]);
     }
+
+    // Dans App\Models\User.php
+public function activeCandidatures()
+{
+    return $this->hasMany(Candidature::class, 'candidat_id')
+        ->whereHas('edition', function($query) {
+            $query->where('statut', 'active');
+        })
+        ->where('statut', 'validee')
+        ->with(['category:id,nom', 'edition:id,nom']);
+}
+
+    public function receivedVotes(){
+        return $this->hasManyThrough(
+            Vote::class,
+            Candidature::class,
+            'candidat_id', // Clé étrangère sur candidatures
+            'candidature_id', // Clé étrangère sur votes
+            'id', // Clé locale sur users
+            'id' // Clé locale sur candidatures
+        );
+    }
 }
