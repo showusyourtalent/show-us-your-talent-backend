@@ -13,7 +13,7 @@ return [
 
         // ✅ Frontend Vercel (production)
         'https://showusyourtalent-a7l9-mks1mr82t-showusyourstalents-projects.vercel.app',
-        'https://showusyourtalent-a7l9.vercel.app'
+        'https://showusyourtalent-a7l9.vercel.app',
 
         // Variable d'environnement (optionnel)
         env('FRONTEND_URL'),
