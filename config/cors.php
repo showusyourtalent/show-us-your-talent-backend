@@ -2,31 +2,26 @@
 
 return [
 
-    /*
-    |--------------------------------------------------------------------------
-    | Cross-Origin Resource Sharing (CORS) Configuration
-    |--------------------------------------------------------------------------
-    |
-    | Here you may configure your settings for cross-origin resource sharing
-    | or "CORS". This determines what cross-origin operations may execute
-    | in web browsers. You are free to adjust these settings as needed.
-    |
-    | To learn more: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-    |
-    */
-
-    'paths' => ['api/*', 'sanctum/csrf-cookie', '/*'],
+    'paths' => ['api/*', 'sanctum/csrf-cookie', 'login', 'logout'],
 
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
-        env('FRONTEND_URL', 'http://localhost:5173'),
-        'https://show-us-your-talent.onrender.com',  // AJOUTEZ CECI
-        'https://show-us-your-talent-frontend.onrender.com', 
-        'https://showusyourtalent-bv4g-i91h2c89f-showusyourstalents-projects.vercel.app'// ET CECI
+        // Développement local
+        'http://localhost:5173',
+        'http://localhost:3000',
+
+        // ✅ Frontend Vercel (production)
+        'https://showusyourtalent-a7l9-mks1mr82t-showusyourstalents-projects.vercel.app',
+
+        // Variable d'environnement (optionnel)
+        env('FRONTEND_URL'),
     ],
 
-    'allowed_origins_patterns' => [],
+    'allowed_origins_patterns' => [
+        // ✅ Couvre toutes les preview URLs Vercel (déploiements de branches)
+        '#^https://showusyourtalent.*\.vercel\.app$#',
+    ],
 
     'allowed_headers' => ['*'],
 
