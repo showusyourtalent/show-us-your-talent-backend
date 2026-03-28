@@ -29,17 +29,16 @@ return [
 
     'path' => env('SESSION_PATH', '/'),
 
-    'domain' => env('SESSION_DOMAIN'),
+    'domain' => env('SESSION_DOMAIN', null),
 
-    // ✅ OBLIGATOIRE pour les cookies cross-site (frontend et backend sur domaines différents)
+    // ✅ OBLIGATOIRE : cookies cross-site nécessitent secure=true
     'secure' => env('SESSION_SECURE_COOKIE', true),
 
     'http_only' => env('SESSION_HTTP_ONLY', true),
 
-    // ✅ OBLIGATOIRE : doit être "none" quand frontend et backend sont sur des domaines différents
+    // ✅ OBLIGATOIRE : "none" pour autoriser les cookies entre Vercel et laravel.cloud
     'same_site' => env('SESSION_SAME_SITE', 'none'),
 
-    // ✅ Nécessaire avec same_site=none + secure=true
     'partitioned' => env('SESSION_PARTITIONED_COOKIE', false),
 
 ];
