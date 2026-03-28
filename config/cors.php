@@ -22,7 +22,8 @@ return [
     'allowed_origins' => [
         env('FRONTEND_URL', 'http://localhost:5173'),
         'https://show-us-your-talent.onrender.com',  // AJOUTEZ CECI
-        'https://show-us-your-talent-frontend.onrender.com',  // ET CECI
+        'https://show-us-your-talent-frontend.onrender.com', 
+        'https://showusyourtalent-bv4g-i91h2c89f-showusyourstalents-projects.vercel.app'// ET CECI
     ],
 
     'allowed_origins_patterns' => [],
